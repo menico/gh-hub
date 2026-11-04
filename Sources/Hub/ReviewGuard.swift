@@ -96,16 +96,40 @@ enum ReviewGuard {
             --output|--output=*|--ext-diff|-O|-O?*|--open-files-in-pager|--open-files-in-pager=*) deny "$@" ;;
           esac
         done
+        # The arguments after the subcommand, and how many are not options.
+        rest=(); seen=0
+        for a in "$@"; do
+          if [ "$seen" = 1 ]; then rest+=("$a"); elif [ "$a" = "$sub" ]; then seen=1; fi
+        done
+        # Options such as --contains take the next word as their value; it isn't a name.
+        words=0; prev=""
+        for a in "${rest[@]}"; do
+          case "$prev" in --contains|--no-contains|--merged|--no-merged|--points-at|--sort|--format) prev=""; continue ;; esac
+          case "$a" in -*) ;; *) words=$((words+1)) ;; esac
+          prev="$a"
+        done
         # Read-only commands only; anything else is refused.
         case "$sub" in
-          status|log|show|diff|grep|blame|annotate|ls-files|ls-tree|rev-parse|rev-list|cat-file|describe|shortlog|\
-          merge-base|name-rev|for-each-ref|show-ref|whatchanged|range-diff|cherry|count-objects|version|help|"") ;;
-          fetch) ;;
-          branch) for a in "$@"; do case "$a" in -d|-D|-m|-M|-c|-C|--delete|--move|--copy|--force|-f|--set-upstream-to*|-u|--unset-upstream|--edit-description) deny "$@" ;; esac; done ;;
-          # Listing tags only: "git tag" or "git tag -l …"; making one has a name.
-          tag) case " $* " in *" -l "*|*" --list "*|" tag ") ;; *) deny "$@" ;; esac ;;
-          remote) case "$*" in *" add"*|*" remove"*|*" rm"*|*" rename"*|*" set-"*|*" prune"*|*" update"*) deny "$@" ;; esac ;;
-          config) case "$*" in *--get*|*--list*|*" -l"*) ;; *) deny "$@" ;; esac ;;
+          status|log|show|diff|grep|blame|annotate|ls-files|ls-tree|rev-parse|rev-list|cat-file|describe|shortlog|merge-base|name-rev|for-each-ref|show-ref|whatchanged|range-diff|cherry|count-objects|version|help|"") ;;
+          # Listing only: no names (which would create, rename or move), unless it is --list with a pattern.
+          branch|tag)
+            list=0; for a in "${rest[@]}"; do case "$a" in -l|--list) list=1 ;; esac; done
+            for a in "${rest[@]}"; do
+              case "$a" in
+                -a|--all|-r|--remotes|-v|-vv|--verbose|-l|--list|--show-current|--contains*|--no-contains*|--merged*|--no-merged*|--points-at*|--sort=*|--format=*|--column*|--no-column|--color*|--no-color|-n*) ;;
+                -*) deny "$@" ;;
+              esac
+            done
+            [ "$words" -gt 0 ] && [ "$list" = 0 ] && deny "$@" ;;
+          remote)
+            case "${rest[0]:-}" in ""|-v|--verbose|get-url|show) ;; *) deny "$@" ;; esac ;;
+          # Reading a value: the first argument is the read action, and nothing that could be a value follows.
+          config)
+            # git runs one action at a time, so a read action first makes the whole call a read.
+            case "${rest[0]:-}" in --get|--get-all|--get-regexp|get|--list|-l|list) ;; *) deny "$@" ;; esac
+            for a in "${rest[@]:1}"; do
+              case "$a" in --get*|--list|-l|--name-only|--null|-z|--show-origin|--show-scope|--global|--local|--system|--includes|--default=*|--type=*|--bool|--int|--path) ;; -*) deny "$@" ;; esac
+            done ;;
           *) deny "$@" ;;
         esac
         exec \(Shell.quote(real)) "$@"
