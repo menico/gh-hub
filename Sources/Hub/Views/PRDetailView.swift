@@ -621,6 +621,24 @@ struct FileDiffView: View {
                         Text("Binary file, or a diff too large for GitHub to show.")
                             .font(.caption).foregroundStyle(.secondary).padding(12)
                     }
+                    // Line comments (often handed back by Claude) on lines the diff doesn't show.
+                    let inDiff = Set(DiffLine.parse(file.patch ?? "").compactMap { anchor(for: $0)?.key })
+                    let stray = drafts.filter { !inDiff.contains($0.key) }.values.joined().sorted { $0.line < $1.line }
+                    if !stray.isEmpty {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Not on a line in this diff, so GitHub won't take these as line comments. Move the point to the review summary, or delete them.",
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(Theme.amber)
+                            ForEach(stray) { draft in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(draft.side == .left ? "Old line" : "Line") \(draft.line)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                                    DraftView(draft: draft, context: context)
+                                }
+                            }
+                        }
+                        .padding(12)
+                    }
                     if !outdated.isEmpty {
                         Divider()
                         VStack(alignment: .leading, spacing: 8) {

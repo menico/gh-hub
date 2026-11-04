@@ -178,3 +178,29 @@ extension Store {
         return nil
     }
 }
+
+// MARK: Comments handed back by Claude
+
+extension Store {
+    /// Picks up comments `gh-hub-comment` dropped in the inbox and adds them
+    /// to the pull request's pending comments.
+    func importInbox() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: ClaudeLink.inbox, includingPropertiesForKeys: nil) else { return }
+        var added: [String: Int] = [:]
+        for file in files where file.pathExtension == ReviewInbox.fileExtension {
+            defer { try? fm.removeItem(at: file) }
+            guard let text = try? String(contentsOf: file, encoding: .utf8), let item = ReviewInbox.parse(text) else { continue }
+            let c = item.comment
+            let existing = drafts[item.pullRequestID] ?? []
+            guard !existing.contains(where: { $0.path == c.path && $0.line == c.line && $0.side == c.side && $0.body == c.body }) else { continue }
+            drafts[item.pullRequestID, default: []].append(c)
+            added[item.pullRequestID, default: 0] += 1
+        }
+        for (id, count) in added {
+            let pr = (reviewRequests + myPulls).first { $0.nodeID == id }
+            let target = pr.map { "\($0.repo)#\($0.number)" } ?? "the pull request"
+            show(.success, "Claude added \(count) pending comment\(count == 1 ? "" : "s") to \(target)")
+        }
+    }
+}

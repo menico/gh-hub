@@ -272,6 +272,27 @@ final class ClaudeLink {
         var worktree: String
         var setup: Setup
         var prompt: String?
+        /// The pull request this is about, so Claude can hand comments back.
+        var pullRequest: PullRequest? = nil
+    }
+
+    /// Where `gh-hub-comment` drops comments for GH Hub to pick up.
+    static let inbox = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("io.github.menico.gh-hub/inbox", isDirectory: true)
+
+    /// Script lines that put `gh-hub-comment` on PATH for this pull request,
+    /// and the argument that tells Claude about it.
+    private func commentBack(_ pr: PullRequest?, dir: URL, id: String) throws -> (lines: [String], argument: String) {
+        guard let pr else { return ([], "") }
+        let bin = dir.deletingLastPathComponent().appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let helper = bin.appendingPathComponent("gh-hub-comment")
+        try ReviewInbox.helperScript(inbox: Self.inbox.path).write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        let note = dir.appendingPathComponent("note-\(id).md")
+        try ReviewInbox.instructions(repo: pr.repo, number: pr.number).write(to: note, atomically: true, encoding: .utf8)
+        return (["export GH_HUB_PR=\(Shell.quote(pr.nodeID))", "export PATH=\(Shell.quote(bin.path)):\"$PATH\""],
+                " --append-system-prompt \"$(cat \(Shell.quote(note.path)))\"")
     }
 
     /// Writes a script that clones if needed, makes or reuses a worktree,
@@ -324,7 +345,9 @@ final class ClaudeLink {
             .appendingPathComponent("io.github.menico.gh-hub/launch", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let id = UUID().uuidString.prefix(8)
-        let command = claudeCommand(profile)
+        let back = try commentBack(plan.pullRequest, dir: dir, id: String(id))
+        let command = claudeCommand(profile) + back.argument
+        lines += back.lines
         lines += [
             "echo",
             "echo \"Claude\(profile.map { " (\($0.name))" } ?? "") in $WT, on $(git branch --show-current 2>/dev/null || echo detached)\"",
@@ -381,20 +404,21 @@ final class ClaudeLink {
     }
 
     /// Picks up a headless review as a conversation, to ask Claude about it.
-    func resumeReview(_ review: ClaudeReview, title: String, repo: String) throws {
+    func resumeReview(_ review: ClaudeReview, title: String, pr: PullRequest) throws {
         guard let id = review.sessionID, let cwd = review.cwd else { return }
         let profile = review.profile.flatMap { name in cpx.profiles.first { $0.name == name } }
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("io.github.menico.gh-hub/launch", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        _ = try open([
-            "#!/bin/bash",
+        let launchID = String(UUID().uuidString.prefix(8))
+        let back = try commentBack(pr, dir: dir, id: launchID)
+        _ = try open(["#!/bin/bash"] + back.lines + [
             "printf '\\033]0;%s\\007' \(Shell.quote("Hub · " + title))",
             "clear",
             "cd \(Shell.quote(cwd)) || exit 1",
-            "\(claudeCommand(profile)) --resume \(Shell.quote(id))",
+            "\(claudeCommand(profile)) --resume \(Shell.quote(id))\(back.argument)",
             "exec \"${SHELL:-/bin/zsh}\" -l",
-        ], in: dir, id: String(UUID().uuidString.prefix(8)), title: title, repo: repo)
+        ], in: dir, id: launchID, title: title, repo: pr.repo)
     }
 
     /// Writes the script and runs it where the person chose: a terminal

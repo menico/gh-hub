@@ -33,6 +33,13 @@ struct HubApp: App {
                     GlobalHotKey.shared.apply()
                 }
                 .task {
+                    // Comments a Claude conversation handed back with gh-hub-comment.
+                    while !Task.isCancelled {
+                        store.importInbox()
+                        try? await Task.sleep(for: .seconds(2))
+                    }
+                }
+                .task {
                     // Every half hour: finished worktrees (merged or closed, nothing left in them) go.
                     try? await Task.sleep(for: .seconds(45))
                     while !Task.isCancelled {

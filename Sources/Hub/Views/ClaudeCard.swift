@@ -191,7 +191,7 @@ extension Store {
     func startClaude(on pr: PullRequest, prompt: String?, as accountID: String) {
         guard let account = account(for: accountID) else { return }
         launch(.init(title: "#\(pr.number) \(pr.title)", repo: pr.repo, account: account, worktree: "pr-\(pr.number)",
-                     setup: .pullRequest(pr.number, base: pr.baseRef), prompt: prompt))
+                     setup: .pullRequest(pr.number, base: pr.baseRef), prompt: prompt, pullRequest: pr))
     }
 
     func startClaude(on issue: Issue, as accountID: String) {

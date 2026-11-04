@@ -371,3 +371,63 @@ final class ThreadTests: XCTestCase {
         XCTAssertNil(ThreadCheck.parse(#"{"type":"result","result":"no schema"}"#))
     }
 }
+
+final class ReviewInboxTests: XCTestCase {
+    func testParse() throws {
+        let item = try XCTUnwrap(ReviewInbox.parse("pr: PR_1\npath: ./src/a.ts\nline: 42\nside: LEFT\n---\nUse a map here.\n\n---\nSecond paragraph.\n"))
+        XCTAssertEqual(item.pullRequestID, "PR_1")
+        XCTAssertEqual(item.comment.path, "src/a.ts")
+        XCTAssertEqual(item.comment.line, 42)
+        XCTAssertEqual(item.comment.side, .left)
+        XCTAssertEqual(item.comment.body, "Use a map here.\n\n---\nSecond paragraph.")
+        XCTAssertTrue(item.comment.fromClaude)
+    }
+
+    func testRejectsBadInput() {
+        XCTAssertNil(ReviewInbox.parse("pr: PR_1\npath: a.ts\nline: x\n---\nbody"))
+        XCTAssertNil(ReviewInbox.parse("pr: PR_1\npath: /etc/a\nline: 1\n---\nbody"))
+        XCTAssertNil(ReviewInbox.parse("pr: PR_1\npath: a.ts\nline: 1\n---\n  \n"))
+        XCTAssertNil(ReviewInbox.parse("path: a.ts\nline: 1\n---\nbody"))
+    }
+
+    func testHelperWritesWhatParseReads() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("inbox-\(UUID().uuidString)'s")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("gh-hub-comment-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: script) }
+        try ReviewInbox.helperScript(inbox: dir.path).write(to: script, atomically: true, encoding: .utf8)
+
+        func run(_ args: [String], stdin: String, pr: String? = "PR_9") throws -> Int32 {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/bash")
+            p.arguments = [script.path] + args
+            var env = ProcessInfo.processInfo.environment
+            env["GH_HUB_PR"] = pr
+            p.environment = env
+            let pipe = Pipe()
+            p.standardInput = pipe
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try p.run()
+            pipe.fileHandleForWriting.write(Data(stdin.utf8))
+            try pipe.fileHandleForWriting.close()
+            p.waitUntilExit()
+            return p.terminationStatus
+        }
+
+        XCTAssertEqual(try run(["src/it's.ts", "7", "--old"], stdin: "Don't drop this check.\n`$HOME` stays literal.\n"), 0)
+        XCTAssertNotEqual(try run(["a.ts", "seven"], stdin: "x"), 0)
+        XCTAssertNotEqual(try run(["a.ts", "1"], stdin: "  \n"), 0)
+        XCTAssertNotEqual(try run(["a.ts", "1"], stdin: "x", pr: nil), 0)
+
+        let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == ReviewInbox.fileExtension }
+        XCTAssertEqual(files.count, 1)
+        let item = try XCTUnwrap(ReviewInbox.parse(String(contentsOf: files[0], encoding: .utf8)))
+        XCTAssertEqual(item.pullRequestID, "PR_9")
+        XCTAssertEqual(item.comment.path, "src/it's.ts")
+        XCTAssertEqual(item.comment.line, 7)
+        XCTAssertEqual(item.comment.side, .left)
+        XCTAssertEqual(item.comment.body, "Don't drop this check.\n`$HOME` stays literal.")
+    }
+}
