@@ -85,17 +85,15 @@ cask "$CASK" do
   desc "Review, approve and run GitHub pull requests, issues and Actions across gh accounts"
   homepage "https://github.com/$REPO"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
   depends_on formula: "gh"
 
   app "GH Hub.app"
 
   # The app is ad-hoc signed rather than notarised, so macOS quarantines it
   # on download. Removing the flag here saves a right-click-open.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/GH Hub.app"],
-                   sudo: false
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/GH Hub.app"]
   end
 
   # GH Hub keeps no credentials (it borrows gh's); only its preferences.
