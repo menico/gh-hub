@@ -121,8 +121,14 @@ enum ReviewGuard {
               esac
             done
             [ "$words" -gt 0 ] && [ "$list" = 0 ] && deny "$@" ;;
+          # Listing remotes, or one remote's URL; "show" only offline (-n). Leading -v is skipped first.
           remote)
-            case "${rest[0]:-}" in ""|-v|--verbose|get-url|show) ;; *) deny "$@" ;; esac ;;
+            i=0; while [ "${rest[$i]:-}" = -v ] || [ "${rest[$i]:-}" = --verbose ]; do i=$((i+1)); done
+            case "${rest[$i]:-}" in
+              ""|get-url) ;;
+              show) case " ${rest[*]} " in *" -n "*) ;; *) deny "$@" ;; esac ;;
+              *) deny "$@" ;;
+            esac ;;
           # Reading a value: the first argument is the read action, and nothing that could be a value follows.
           config)
             # git runs one action at a time, so a read action first makes the whole call a read.
