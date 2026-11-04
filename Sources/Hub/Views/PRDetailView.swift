@@ -363,103 +363,107 @@ struct PRDetailView: View {
     // MARK: Actions
 
     private var actionBar: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            VStack(alignment: .leading, spacing: 6) {
-                if !drafts.isEmpty {
-                    HStack(spacing: 6) {
-                        Pill(text: "\(drafts.count) pending comment\(drafts.count == 1 ? "" : "s")", symbol: "clock", tint: Theme.amber)
-                        Text("go out with your review").font(.caption).foregroundStyle(.secondary)
-                        Button("Discard") { store.drafts[pr.nodeID] = nil }.buttonStyle(.link).font(.caption)
-                    }
+        VStack(alignment: .leading, spacing: 6) {
+            // On its own line, so the text field next to the buttons keeps its width.
+            if !drafts.isEmpty {
+                HStack(spacing: 6) {
+                    Pill(text: "\(drafts.count) pending comment\(drafts.count == 1 ? "" : "s")", symbol: "clock", tint: Theme.amber)
+                    Text("go out with your review").font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                    Button("Discard") { store.drafts[pr.nodeID] = nil }.buttonStyle(.link).font(.caption)
+                        .fixedSize()
+                    Spacer(minLength: 0)
                 }
+            }
+            HStack(alignment: .bottom, spacing: 10) {
                 TextField(drafts.isEmpty ? "Leave a review comment (optional for approve)…" : "Review summary (optional)…", text: $comment, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...5)
                     .padding(9)
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-            .frame(minWidth: 120)
+                    .frame(minWidth: 120)
 
-            Menu {
-                if let conversation {
-                    if conversation.autoMergeMethod != nil {
-                        Button("Disable auto-merge") { Task { await act("Auto-merge off") { try await $0.setAutoMerge(pr, method: nil) } } }
-                            .disabled(!conversation.canDisableAutoMerge)
-                    } else {
-                        Menu("Enable auto-merge") {
-                            ForEach(MergeMethod.allCases, id: \.self) { method in
-                                Button(method.label) { Task { await act("Auto-merge on: merges when checks pass") { try await $0.setAutoMerge(pr, method: method) } } }
+                Menu {
+                    if let conversation {
+                        if conversation.autoMergeMethod != nil {
+                            Button("Disable auto-merge") { Task { await act("Auto-merge off") { try await $0.setAutoMerge(pr, method: nil) } } }
+                                .disabled(!conversation.canDisableAutoMerge)
+                        } else {
+                            Menu("Enable auto-merge") {
+                                ForEach(MergeMethod.allCases, id: \.self) { method in
+                                    Button(method.label) { Task { await act("Auto-merge on: merges when checks pass") { try await $0.setAutoMerge(pr, method: method) } } }
+                                }
                             }
+                            .disabled(!conversation.canEnableAutoMerge)
                         }
-                        .disabled(!conversation.canEnableAutoMerge)
+                        Button("Update branch from \(pr.baseRef)") { Task { await act("Updating #\(pr.number) from \(pr.baseRef)") { try await $0.updateBranch(pr) } } }
+                            .disabled(!conversation.canUpdateBranch)
                     }
-                    Button("Update branch from \(pr.baseRef)") { Task { await act("Updating #\(pr.number) from \(pr.baseRef)") { try await $0.updateBranch(pr) } } }
-                        .disabled(!conversation.canUpdateBranch)
-                }
-                if pr.lane == .mine {
-                    if pr.isDraft {
-                        Button("Mark ready for review") { Task { await act("#\(pr.number) is ready for review") { try await $0.setDraft(pr, false) } } }
-                    } else {
-                        Button("Convert to draft") { Task { await act("#\(pr.number) is a draft") { try await $0.setDraft(pr, true) } } }
+                    if pr.lane == .mine {
+                        if pr.isDraft {
+                            Button("Mark ready for review") { Task { await act("#\(pr.number) is ready for review") { try await $0.setDraft(pr, false) } } }
+                        } else {
+                            Button("Convert to draft") { Task { await act("#\(pr.number) is a draft") { try await $0.setDraft(pr, true) } } }
+                        }
                     }
+                    Button("Request reviewers…") { showReviewers = true }
+                    Divider()
+                    Button("Open in browser") { NSWorkspace.shared.open(pr.url) }
+                    Button("Copy checkout command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString("gh pr checkout \(pr.number) -R \(pr.repo)", forType: .string)
+                        store.show(.info, "Copied gh pr checkout \(pr.number)")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
-                Button("Request reviewers…") { showReviewers = true }
-                Divider()
-                Button("Open in browser") { NSWorkspace.shared.open(pr.url) }
-                Button("Copy checkout command") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("gh pr checkout \(pr.number) -R \(pr.repo)", forType: .string)
-                    store.show(.info, "Copied gh pr checkout \(pr.number)")
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Auto-merge, update branch, draft, reviewers, open in browser")
+
+                // Send the review without approving: as a comment, or blocking with "request changes".
+                Menu {
+                    Button("Comment") { Task { await review(.comment) } }
+                    Button("Request changes") { Task { await review(.requestChanges) } }
+                } label: {
+                    Label(drafts.isEmpty ? "Comment" : "Comment with \(drafts.count)", systemImage: "text.bubble")
+                } primaryAction: {
+                    Task { await review(.comment) }
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Auto-merge, update branch, draft, reviewers, open in browser")
+                .fixedSize()
+                .disabled(busy || (comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && drafts.isEmpty))
+                .help("Submit your review without approving; the arrow has Request changes. Type a summary or add line comments first.")
 
-            // Send the review without approving: as a comment, or blocking with "request changes".
-            Menu {
-                Button("Comment") { Task { await review(.comment) } }
-                Button("Request changes") { Task { await review(.requestChanges) } }
-            } label: {
-                Label(drafts.isEmpty ? "Comment" : "Comment with \(drafts.count)", systemImage: "text.bubble")
-            } primaryAction: {
-                Task { await review(.comment) }
-            }
-            .fixedSize()
-            .disabled(busy || (comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && drafts.isEmpty))
-            .help("Submit your review without approving; the arrow has Request changes. Type a summary or add line comments first.")
-
-            Menu {
-                ForEach(MergeMethod.allCases, id: \.self) { method in
-                    Button(method.label) { confirmMerge = method }
+                Menu {
+                    ForEach(MergeMethod.allCases, id: \.self) { method in
+                        Button(method.label) { confirmMerge = method }
+                    }
+                } label: {
+                    Label("Merge", systemImage: "arrow.triangle.merge")
+                } primaryAction: {
+                    confirmMerge = .squash
                 }
-            } label: {
-                Label("Merge", systemImage: "arrow.triangle.merge")
-            } primaryAction: {
-                confirmMerge = .squash
-            }
-            .fixedSize()
-            .disabled(busy || pr.isDraft || pr.mergeable == .conflicting)
-            .help("Squash and merge; the arrow picks another method")
+                .fixedSize()
+                .disabled(busy || pr.isDraft || pr.mergeable == .conflicting)
+                .help("Squash and merge; the arrow picks another method")
 
-            Button {
-                Task { await review(.approve) }
-            } label: {
-                Label(drafts.isEmpty ? "Approve" : "Approve with \(drafts.count)", systemImage: "checkmark.seal.fill")
-                    .padding(.horizontal, 6)
+                Button {
+                    Task { await review(.approve) }
+                } label: {
+                    Label(drafts.isEmpty ? "Approve" : "Approve with \(drafts.count)", systemImage: "checkmark.seal.fill")
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.green)
+                .fixedSize()
+                .layoutPriority(1)
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .disabled(busy || pr.lane == .mine)
+                .help(pr.lane == .mine ? "You cannot approve your own pull request"
+                      : pr.myReview == .changesRequested ? "Approve (⇧⌘↩). This replaces your request for changes."
+                      : "Approve (⇧⌘↩)")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.green)
-            .fixedSize()
-            .layoutPriority(1)
-            .keyboardShortcut(.return, modifiers: [.command, .shift])
-            .disabled(busy || pr.lane == .mine)
-            .help(pr.lane == .mine ? "You cannot approve your own pull request"
-                  : pr.myReview == .changesRequested ? "Approve (⇧⌘↩). This replaces your request for changes."
-                  : "Approve (⇧⌘↩)")
         }
         .controlSize(.large)
         .padding(14)
