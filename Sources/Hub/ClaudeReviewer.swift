@@ -91,7 +91,7 @@ final class ClaudeReviewer {
         let schema = Shell.quote(ClaudeReview.schema.split(whereSeparator: \.isNewline).joined())
         switch mode {
         case .quick:
-            process.arguments = ["-c", "\(command) -p --output-format json --max-turns \(persona.id == ReviewPersona.general.id ? 20 : 30) --allowedTools Read Grep Glob "
+            process.arguments = ["-c", "\(command) -p --output-format json --setting-sources user --max-turns \(persona.id == ReviewPersona.general.id ? 20 : 30) --allowedTools Read Grep Glob "
                 + "--json-schema \(schema) < \(Shell.quote(tmp.path))"]
         case .codeReview:
             // Reading tools and read-only gh only; anything that could post is denied outright.
@@ -101,15 +101,15 @@ final class ClaudeReviewer {
             let denied = ["Bash(gh pr comment:*)", "Bash(gh pr review:*)", "Bash(gh api:*)",
                           "mcp__github_inline_comment__create_inline_comment", "Edit", "Write", "NotebookEdit"]
             let pluginFlag = plugin.enabled ? "" : plugin.dir.map { "--plugin-dir \(Shell.quote($0)) " } ?? ""
-            process.arguments = ["-c", "\(command) -p --output-format json --max-turns 120 \(pluginFlag)--json-schema \(schema) "
+            process.arguments = ["-c", "\(command) -p --output-format json --setting-sources user --max-turns 120 \(pluginFlag)--json-schema \(schema) "
                 + "--allowedTools \(allowed.map(Shell.quote).joined(separator: " ")) "
                 + "--disallowedTools \(denied.map(Shell.quote).joined(separator: " ")) "
                 + "-- \"$(cat \(Shell.quote(tmp.path)))\""]
         }
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
         var env = ShellEnv.environment()
-        // gh inside the review reads GitHub as the account that sees the PR.
-        if let ghToken {
+        // gh inside the review reads GitHub as the account that sees the PR; Quick never runs gh.
+        if mode == .codeReview, let ghToken {
             env["GH_TOKEN"] = ghToken
             env["GITHUB_TOKEN"] = nil
         }
@@ -227,7 +227,7 @@ extension ClaudeReviewer {
         let schema = Shell.quote(ThreadCheck.schema.split(whereSeparator: \.isNewline).joined())
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", "\(claude.claudeCommand(profile)) -p --output-format json --max-turns 12 --allowedTools Read Grep Glob "
+        process.arguments = ["-c", "\(claude.claudeCommand(profile)) -p --output-format json --setting-sources user --max-turns 12 --allowedTools Read Grep Glob "
             + "--json-schema \(schema) < \(Shell.quote(tmp.path))"]
         process.currentDirectoryURL = URL(fileURLWithPath: clone.exists ? clone.path : NSTemporaryDirectory())
         process.environment = ReviewGuard.environment(ShellEnv.environment())

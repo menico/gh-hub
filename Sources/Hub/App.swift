@@ -19,6 +19,7 @@ struct HubApp: App {
     var body: some Scene {
         Window("GH Hub", id: "main") {
             RootView()
+                .environment(\.openURL, SafeLinks.action)
                 .environment(store)
                 .environment(router)
                 .frame(minWidth: 980, minHeight: 600)

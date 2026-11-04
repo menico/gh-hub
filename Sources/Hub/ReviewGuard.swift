@@ -54,7 +54,9 @@ enum ReviewGuard {
             case "$a" in
               -X?*) method="${a#-X}" ;;
               --method=*) method="${a#--method=}" ;;
-              -f|-F|--field|--raw-field|--input|-f?*|-F?*|--field=*|--raw-field=*|--input=*) fields=1 ;;
+              # A body read from a file (--input, field=@file) can't be checked: refuse it.
+              --input|--input=*|*=@*) deny "$@" ;;
+              -f|-F|--field|--raw-field|-f?*|-F?*|--field=*|--raw-field=*) fields=1 ;;
               graphql) gql=1 ;;
             esac
             all="$all $a"; prev="$a"
@@ -86,9 +88,25 @@ enum ReviewGuard {
             *) sub="$a"; break ;;
           esac
         done
+        deny() { echo "GH Hub blocked this during a read-only review: git $*" >&2; exit 1; }
+        # Config from the command line can define aliases, pagers or ssh commands that run programs.
+        for a in "$@"; do
+          case "$a" in
+            -c|-c?*|--config-env|--config-env=*|--exec-path|--exec-path=*) deny "$@" ;;
+            --output|--output=*|--ext-diff|-O|-O?*|--open-files-in-pager|--open-files-in-pager=*) deny "$@" ;;
+          esac
+        done
+        # Read-only commands only; anything else is refused.
         case "$sub" in
-          push|commit|merge|rebase|reset|clean|stash|checkout|switch|restore|am|apply|cherry-pick|revert|tag|rm|mv|worktree|submodule)
-            echo "GH Hub blocked this during a read-only review: git $*" >&2; exit 1 ;;
+          status|log|show|diff|grep|blame|annotate|ls-files|ls-tree|rev-parse|rev-list|cat-file|describe|shortlog|\
+          merge-base|name-rev|for-each-ref|show-ref|whatchanged|range-diff|cherry|count-objects|version|help|"") ;;
+          fetch) ;;
+          branch) for a in "$@"; do case "$a" in -d|-D|-m|-M|-c|-C|--delete|--move|--copy|--force|-f|--set-upstream-to*|-u|--unset-upstream|--edit-description) deny "$@" ;; esac; done ;;
+          # Listing tags only: "git tag" or "git tag -l …"; making one has a name.
+          tag) case " $* " in *" -l "*|*" --list "*|" tag ") ;; *) deny "$@" ;; esac ;;
+          remote) case "$*" in *" add"*|*" remove"*|*" rm"*|*" rename"*|*" set-"*|*" prune"*|*" update"*) deny "$@" ;; esac ;;
+          config) case "$*" in *--get*|*--list*|*" -l"*) ;; *) deny "$@" ;; esac ;;
+          *) deny "$@" ;;
         esac
         exec \(Shell.quote(real)) "$@"
         """

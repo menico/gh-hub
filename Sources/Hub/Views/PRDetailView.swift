@@ -854,6 +854,7 @@ struct MarkdownBody: View {
             }
         }
         .textSelection(.enabled)
+        .environment(\.openURL, SafeLinks.action)
     }
 
     @ViewBuilder
@@ -950,5 +951,14 @@ struct MarkdownBody: View {
         if let lines = code { blocks.append(.code(lines.joined(separator: "\n"))) }
         flush()
         return blocks
+    }
+}
+
+
+/// Links in pull requests, comments and Claude's text open only when they are
+/// web links; javascript:, file: and app schemes are dropped.
+enum SafeLinks {
+    static let action = OpenURLAction { url in
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
     }
 }
