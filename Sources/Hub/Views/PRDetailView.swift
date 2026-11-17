@@ -37,6 +37,12 @@ struct DetailColumn: View {
             } else {
                 EmptyState(symbol: "folder", title: "Worktree removed", subtitle: "")
             }
+        case .notification(let id):
+            if let n = store.notification(id) {
+                NotificationDetailView(notification: n).id(id)
+            } else {
+                EmptyState(symbol: "bell.slash", title: "Notification gone", subtitle: "It was marked done.")
+            }
         case nil:
             EmptyState(symbol: "sparkles", title: "Pick something",
                        subtitle: "Select a pull request or a run to review, approve, merge or re-run it.")

@@ -33,6 +33,13 @@ final class Store {
     private(set) var loadingRepoPulls: Set<String> = []
     private(set) var repoPullsError: [String: String] = [:]
     private(set) var issues: [Issue] = []
+    /// Every account's GitHub notifications: unread from GitHub, plus the ones
+    /// read in Hub this session, so a row doesn't vanish as you open it.
+    /// Written only by StoreNotifications.swift.
+    var notifications: [GHNotification] = []
+    var notificationsError: [String: String] = [:]
+    /// Threads (with their last update) already announced or already there at launch.
+    var seenNotificationKeys: Set<String>?
     /// Local clones and Claude Code sessions.
     let claude = ClaudeLink()
     /// Claude's reviews of pull requests.
@@ -182,7 +189,7 @@ final class Store {
     func acting(for run: WorkflowRun) -> String { acting(run.accountID, viewers: viewers(of: run)) }
     func acting(for repo: Repo) -> String { acting(repo.accountID, viewers: viewers(of: repo)) }
 
-    private func shown(_ viewers: Set<String>, in scope: String?) -> Bool {
+    func shown(_ viewers: Set<String>, in scope: String?) -> Bool {
         if let scope { return viewers.contains(scope) }
         return !viewers.isSubset(of: hiddenAccounts)
     }
@@ -410,6 +417,7 @@ final class Store {
         self.repos = repos.sorted { ($0.pushedAt ?? .distantPast) > ($1.pushedAt ?? .distantPast) }
 
         await refreshRuns(prRepos: Set((reviews + mine).map(\.repo)))
+        await refreshNotifications()
         for index in accounts.indices {
             accounts[index].usage = clients[accounts[index].id]?.cache.snapshot
         }
@@ -496,6 +504,7 @@ final class Store {
             notify(title: "\(run.phase == .success ? "✓ Finished" : run.phase == .failure ? "✗ Failed" : "Finished") · \(run.repo)",
                    body: "\(run.name) #\(run.runNumber) — \(run.title)", target: "run:\(run.id)")
         }
+        announceNotifications()
         seenReviewIDs = reviewIDs
         seenFailedRunIDs = Set(failed.map(\.id))
         seenWaitingRunIDs = Set(waiting.map(\.id))
@@ -536,6 +545,8 @@ final class Store {
             if let pr = reviewRequests.first(where: { $0.nodeID == key }) { return (.reviews, .pr(pr)) }
             if let pr = myPulls.first(where: { $0.nodeID == key }) { return (.mine, .pr(pr)) }
             if let pr = reviewedPulls.first(where: { $0.nodeID == key }) { return (.reviews, .pr(pr)) }
+        case "notification":
+            if notification(key) != nil { return (.notifications, .notification(key)) }
         case "issue":
             if let issue = issues.first(where: { $0.nodeID == key }) { return (.issues, .issue(issue)) }
         case "run", "waiting":

@@ -37,7 +37,8 @@ struct HubApp: App {
                         guard let (pane, selection) = store.destination(of: target) else {
                             // Gone from the lists since: show where it was.
                             let kind = target.split(separator: ":").first.map(String.init)
-                            router.section = ["pr": .reviews, "issue": .issues, "run": .actions, "waiting": .waiting][kind ?? ""] ?? router.section
+                            router.section = ["pr": .reviews, "issue": .issues, "run": .actions, "waiting": .waiting,
+                                              "notification": .notifications, "pane": .notifications][kind ?? ""] ?? router.section
                             return
                         }
                         // The pick may belong to another account than the one in view.
@@ -295,6 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("  \(state.account.login): reviews \(store.visibleReviews.count) reviewed \(store.visibleReviewed.count) \(store.visibleReviewed.prefix(3).map { "#\($0.number) \($0.myReview?.rawValue ?? "-")" }) mine \(store.visibleMine.count) runs \(store.visibleRuns.count) run-repos \(Set(store.visibleRuns.map(\.repo)).sorted()) reachable-repos \(all)")
             }
             store.scope = nil
+            print("notifications:", Dictionary(grouping: store.notifications, by: \.accountID).mapValues { ($0.count, $0.filter(\.unread).count) }, "accounts:", store.accounts.map(\.id), "hidden:", store.hiddenAccounts, "unread visible:", store.unreadNotificationCount, "errors:", store.notificationsError)
             let moved = store.reviewedPulls.filter(\.hasCommitsSinceMyReview)
             print("reviewed with new commits:", moved.map { "#\($0.number)" })
             if let pr = moved.first, let client = store.client(pr.accountID),

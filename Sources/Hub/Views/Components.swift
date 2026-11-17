@@ -4,7 +4,7 @@ import SwiftUI
 // MARK: Navigation
 
 enum Pane: String, CaseIterable, Identifiable {
-    case reviews, mine, repos, issues, actions, waiting, claude
+    case reviews, mine, repos, issues, actions, waiting, claude, notifications
     var id: String { rawValue }
 
     var title: String {
@@ -16,6 +16,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .actions: "Actions"
         case .waiting: "Awaiting approval"
         case .claude: "Claude"
+        case .notifications: "Notifications"
         }
     }
 
@@ -28,6 +29,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .actions: "bolt.circle.fill"
         case .waiting: "hand.raised.circle.fill"
         case .claude: "sparkles"
+        case .notifications: "bell.badge.fill"
         }
     }
 
@@ -40,6 +42,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .actions: Theme.amber
         case .waiting: Theme.pink
         case .claude: Theme.claude
+        case .notifications: Color(red: 0.95, green: 0.55, blue: 0.20)
         }
     }
 }
@@ -51,12 +54,14 @@ enum Selection: Hashable {
     case terminal(UUID)
     case session(String)
     case worktree(String)
+    case notification(String)
 
     var key: String {
         switch self {
         case .terminal(let id): "terminal:\(id)"
         case .session(let id): "session:\(id)"
         case .worktree(let path): "worktree:\(path)"
+        case .notification(let id): "notification:\(id)"
         case .pr(let pr): "pr:\(pr.nodeID)"
         case .issue(let issue): "issue:\(issue.nodeID)"
         case .run(let run): "run:\(run.id)"

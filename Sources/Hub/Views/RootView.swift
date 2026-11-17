@@ -98,6 +98,9 @@ struct RootView: View {
                                             command: store.claude.claudeCommand(nil))
             } else if pick == "terminal" {
                 try? store.claude.openShell(in: CpxConfig.home, title: "GH Hub test shell", repo: nil)
+            } else if pick == "notifications" {
+                // Only the list: opening one would mark it read on GitHub.
+                router.section = .notifications
             } else if pick == "claudepane" {
                 router.section = .claude
             } else if pick == "claude", let pr = (store.visibleReviews + store.visibleMine).first(where: { !store.claudeSessions(for: $0).isEmpty }) {
@@ -174,6 +177,7 @@ struct SidebarView: View {
         case .actions: store.failingRuns.filter(store.isMine).count
         case .waiting: store.waitingRuns.count
         case .claude: store.claude.terminals.running.count + store.claude.liveSessions.count
+        case .notifications: store.unreadNotificationCount
         }
     }
 

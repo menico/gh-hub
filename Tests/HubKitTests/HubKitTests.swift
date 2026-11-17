@@ -539,3 +539,34 @@ final class PriorFindingsTests: XCTestCase {
         XCTAssertTrue(ClaudeReview.codeReviewPrompt(for: .sample).contains("in one pass"))
     }
 }
+
+final class NotificationTests: XCTestCase {
+    private func make(_ type: String, _ subject: String?, reason: String = "mention", repoURL: String = "https://github.com/o/r") -> GHNotification {
+        GHNotification(threadID: "1", accountID: "github.com/me", unread: true, reason: reason, updatedAt: .now, title: "t",
+                       type: type, repo: "o/r", repoURL: URL(string: repoURL), subjectURL: subject.flatMap(URL.init(string:)))
+    }
+
+    func testPullRequestAndIssuePages() {
+        let pr = make("PullRequest", "https://api.github.com/repos/o/r/pulls/12")
+        XCTAssertEqual(pr.number, 12)
+        XCTAssertTrue(pr.isPullRequest)
+        XCTAssertEqual(pr.webURL?.absoluteString, "https://github.com/o/r/pull/12")
+        let issue = make("Issue", "https://ghe.example.com/api/v3/repos/o/r/issues/4", repoURL: "https://ghe.example.com/o/r")
+        XCTAssertEqual(issue.webURL?.absoluteString, "https://ghe.example.com/o/r/issues/4")
+    }
+
+    func testOtherKindsFallBackSensibly() {
+        XCTAssertEqual(make("Commit", "https://api.github.com/repos/o/r/commits/abc123").webURL?.absoluteString, "https://github.com/o/r/commit/abc123")
+        XCTAssertEqual(make("Release", "https://api.github.com/repos/o/r/releases/9").webURL?.absoluteString, "https://github.com/o/r/releases")
+        XCTAssertEqual(make("Discussion", nil).webURL?.absoluteString, "https://github.com/o/r/discussions")
+        XCTAssertNil(make("Release", "https://api.github.com/repos/o/r/releases/9").number)
+    }
+
+    func testBannersOnlyForTalkAimedAtYou() {
+        XCTAssertTrue(make("Issue", nil, reason: "mention").deservesBanner)
+        XCTAssertTrue(make("Issue", nil, reason: "comment").deservesBanner)
+        XCTAssertFalse(make("PullRequest", nil, reason: "review_requested").deservesBanner)
+        XCTAssertFalse(make("CheckSuite", nil, reason: "ci_activity").deservesBanner)
+        XCTAssertFalse(make("Issue", nil, reason: "subscribed").deservesBanner)
+    }
+}

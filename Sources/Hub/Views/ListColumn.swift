@@ -23,6 +23,21 @@ struct ListColumn: View {
         var id: String { rawValue }
     }
 
+    enum NotificationFilter: String, CaseIterable, Identifiable {
+        case all = "All", mentions = "Mentions", reviews = "Reviews", mine = "Yours"
+        var id: String { rawValue }
+
+        func includes(_ n: GHNotification) -> Bool {
+            switch self {
+            case .all: true
+            case .mentions: ["mention", "team_mention"].contains(n.reason)
+            case .reviews: ["review_requested", "approval_requested"].contains(n.reason)
+            case .mine: ["author", "comment", "assign", "state_change"].contains(n.reason)
+            }
+        }
+    }
+    @State private var notificationFilter: NotificationFilter = .all
+
     enum RunFilter: String, CaseIterable, Identifiable {
         case all = "All", active = "Active", failed = "Failed", mine = "Mine"
         var id: String { rawValue }
@@ -84,6 +99,19 @@ struct ListColumn: View {
                     ForEach(filtered(store.waitingRuns)) { run in
                         RunRow(run: run).tag(Selection.run(run))
                     }
+                case .notifications:
+                    let list = filtered(notificationList)
+                    let unread = list.filter(\.unread), read = list.filter { !$0.unread }
+                    if !unread.isEmpty {
+                        SwiftUI.Section {
+                            ForEach(unread) { n in NotificationRow(notification: n).tag(Selection.notification(n.id)) }
+                        } header: { listHeader("Unread", unread.count) }
+                    }
+                    if !read.isEmpty {
+                        SwiftUI.Section {
+                            ForEach(read) { n in NotificationRow(notification: n).tag(Selection.notification(n.id)) }
+                        } header: { listHeader("Read", read.count) }
+                    }
                 case .claude:
                     EmptyView()
                 }
@@ -118,10 +146,12 @@ struct ListColumn: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(section.title)
                     .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                    .fixedSize()
                 if let scope = store.activeScope {
                     HStack(spacing: 4) {
                         Circle().fill(Theme.color(for: scope)).frame(width: 7, height: 7)
-                        Text(store.name(scope))
+                        Text(store.name(scope)).lineLimit(1).truncationMode(.middle)
                         Button { store.scope = nil } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain)
                             .foregroundStyle(.tertiary)
@@ -154,6 +184,17 @@ struct ListColumn: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
             }
+            if section == .notifications {
+                HStack(spacing: 8) {
+                    Picker("", selection: $notificationFilter) {
+                        ForEach(NotificationFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Button("Mark all read") { store.markAllRead() }
+                        .disabled(store.unreadNotificationCount == 0)
+                }
+            }
             if section == .actions {
                 Picker("", selection: $runFilter) {
                     ForEach(RunFilter.allCases) { Text($0.rawValue).tag($0) }
@@ -180,6 +221,7 @@ struct ListColumn: View {
         case .issues: "\(issueList.count) open"
         case .actions: "\(runs.count) runs"
         case .waiting: "\(store.waitingRuns.count) waiting"
+        case .notifications: "\(store.unreadNotificationCount) unread"
         case .claude: ""
         }
     }
@@ -216,6 +258,7 @@ struct ListColumn: View {
         case .issues: filtered(issueList).isEmpty
         case .actions: filtered(runs).isEmpty
         case .waiting: filtered(store.waitingRuns).isEmpty
+        case .notifications: filtered(notificationList).isEmpty
         case .claude: false
         }
         if isEmpty && remote.isEmpty && !searchingRemote {
@@ -259,6 +302,15 @@ struct ListColumn: View {
                 case .waiting:
                     EmptyState(symbol: "hand.thumbsup.fill", title: "Nothing to approve",
                                subtitle: "Deployments waiting on an environment reviewer show up here.", tint: Theme.pink)
+                case .notifications:
+                    if let problem = store.notificationsError.values.first {
+                        EmptyState(symbol: "exclamationmark.triangle", title: "Couldn't load notifications", subtitle: problem, tint: Theme.red)
+                    } else {
+                        EmptyState(symbol: "bell.slash", title: "All caught up",
+                                   subtitle: notificationFilter == .all ? "Mentions, replies and other GitHub notifications show up here."
+                                                                        : "Nothing under \(notificationFilter.rawValue).",
+                                   tint: Pane.notifications.tint)
+                    }
                 case .claude:
                     EmptyView()
                 }
@@ -304,6 +356,26 @@ struct ListColumn: View {
         return prs.filter { pr in
             [pr.title, pr.repo, pr.author, pr.headRef, "#\(pr.number)"].contains { $0.localizedCaseInsensitiveContains(query) }
         }
+    }
+
+    private var notificationList: [GHNotification] {
+        store.visibleNotifications.filter(notificationFilter.includes)
+    }
+
+    private func filtered(_ list: [GHNotification]) -> [GHNotification] {
+        guard !query.isEmpty else { return list }
+        return list.filter { n in
+            [n.title, n.repo, n.reasonLabel, n.number.map { "#\($0)" } ?? ""].contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
+
+    private func listHeader(_ title: String, _ count: Int) -> some View {
+        HStack {
+            Text(title).fontWeight(.semibold)
+            Spacer()
+            Text("\(count)").foregroundStyle(.tertiary).monospacedDigit()
+        }
+        .font(.system(size: 11.5))
     }
 
     private var issueList: [Issue] {
