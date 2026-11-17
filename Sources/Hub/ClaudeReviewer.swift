@@ -17,6 +17,10 @@ final class ClaudeReviewer {
     private(set) var states: [String: State] = [:]
     /// The head commit each review looked at, to say when the PR moved on.
     private(set) var reviewedHead: [String: String] = [:]
+    /// Pull requests whose last review failed because Claude wasn't signed in.
+    private(set) var needsLogin: Set<String> = []
+    /// Claude commands with a browser sign-in under way.
+    private(set) var signingIn: Set<String> = []
     @ObservationIgnored private var processes: [String: Process] = [:]
 
     private static var folder: URL {
@@ -75,6 +79,10 @@ final class ClaudeReviewer {
             ? ClaudeReview.prompt(for: pr, files: files, hasCheckout: clone.exists, focus: focus?.nilIfEmpty, persona: persona)
             : ClaudeReview.codeReviewPrompt(for: pr, persona: persona)
         if mode == .codeReview, let focus = focus?.nilIfEmpty { prompt += "\n(The reviewer also asks you to pay attention to: \(focus))" }
+        // A re-review starts from what the last one said, not from scratch.
+        if let previous = state(for: pr), case .done(let earlier) = previous {
+            prompt += ClaudeReview.priorFindings(earlier, headChanged: head != nil && reviewedHead[pr.nodeID] != head)
+        }
         let plugin = claude.codeReviewPlugin(for: profile)
         let id = pr.nodeID
         let cwd = clone.exists ? clone.path : NSTemporaryDirectory()
@@ -138,6 +146,9 @@ final class ClaudeReviewer {
                     result = .success(review.anchored(to: files))
                 } else if process.terminationReason == .uncaughtSignal {
                     result = .failure(ReviewError(message: "Cancelled."))
+                } else if let failure = ClaudeReview.failure(in: text) {
+                    result = .failure(ReviewError(message: "Claude didn't return a review: " + failure.message
+                        + (failure.needsLogin ? " Sign in again, then try again." : ""), needsLogin: failure.needsLogin))
                 } else {
                     let detail = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                     let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,6 +166,7 @@ final class ClaudeReviewer {
     private func finish(id: String, process: Process, head: String?, result: Result<ClaudeReview, Error>) {
         guard processes[id] === process else { return }
         processes[id] = nil
+        needsLogin.remove(id)
         switch result {
         case .success(var review):
             review.reviewedAt = .now
@@ -163,12 +175,57 @@ final class ClaudeReviewer {
             save(id, Saved(review: review, head: head))
         case .failure(let error):
             states[id] = .failed(error.localizedDescription)
+            if (error as? ReviewError)?.needsLogin == true { needsLogin.insert(id) }
         }
     }
 
     struct ReviewError: LocalizedError {
         let message: String
+        var needsLogin = false
         var errorDescription: String? { message }
+    }
+
+    /// Signs the account a review runs as back in to Claude: `claude auth login`
+    /// opens the browser, and the login lands in that account's own config
+    /// folder (`CLAUDE_CONFIG_DIR`), so no terminal or cpx is involved.
+    /// When it works, the failed review is cleared so it can start again.
+    func signIn(_ pr: PullRequest, command: String) {
+        guard !signingIn.contains(command) else { return }
+        signingIn.insert(command)
+        let id = pr.nodeID
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", "\(command) auth login"]
+        process.environment = ShellEnv.environment()
+        process.standardInput = FileHandle.nullDevice
+        let err = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = err
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var problem: String?
+            do {
+                try process.run()
+                let errData = err.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    let said = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                    problem = "Sign-in didn't finish" + (said.isEmpty ? "." : ": " + String(said.suffix(300)))
+                }
+            } catch {
+                problem = "Couldn't start Claude to sign in: \(error.localizedDescription)"
+            }
+            await self?.signedIn(id: id, command: command, problem: problem)
+        }
+    }
+
+    private func signedIn(id: String, command: String, problem: String?) {
+        signingIn.remove(command)
+        if let problem {
+            states[id] = .failed(problem)
+        } else if case .failed = states[id] {
+            states[id] = nil
+            needsLogin.remove(id)
+        }
     }
 
     private static func fileName(_ id: String) -> String {

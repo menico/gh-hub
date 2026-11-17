@@ -545,7 +545,11 @@ struct ClaudeReviewCard: View {
             case .failed(let message):
                 Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(Theme.red).font(.callout)
                     .textSelection(.enabled)
-                startRow(label: "Try again")
+                if reviewer.needsLogin.contains(pr.nodeID) {
+                    signInRow
+                } else {
+                    startRow(label: "Try again")
+                }
             case .done(let review):
                 result(review)
             }
@@ -594,6 +598,24 @@ struct ClaudeReviewCard: View {
             PersonaPicker(selection: Binding(get: { personaID }, set: { personaOverride = $0 == defaultPersona ? nil : $0 }),
                           defaultID: defaultPersona, custom: customPersonas)
             startButtons(label: label)
+        }
+    }
+
+    /// Claude's login for this account expired: sign in from here, no terminal.
+    private var signInRow: some View {
+        let command = store.claude.claudeCommand(profile)
+        let busy = store.reviewer.signingIn.contains(command)
+        return HStack(spacing: 8) {
+            Button { store.reviewer.signIn(pr, command: command) } label: {
+                Label(busy ? "Waiting for the browser…" : "Sign in to Claude", systemImage: "person.badge.key")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.claude)
+            .disabled(busy)
+            if busy { ProgressView().controlSize(.small) }
+            Text("Opens claude.ai in your browser for \(profile.map { "the \($0.name) profile" } ?? "your Claude account"). The review can start again once you're signed in.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

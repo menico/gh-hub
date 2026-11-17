@@ -90,6 +90,9 @@ public struct PRConversation: Sendable {
     public var suggestedReviewers: [Person]
     public var threads: [ReviewThread]
     public var timeline: [TimelineEntry]
+    /// When you last reviewed, and the commit you reviewed; nil if you never did.
+    public var myReviewAt: Date? = nil
+    public var myReviewCommit: String? = nil
 }
 
 // MARK: GitHub
@@ -99,6 +102,7 @@ extension GitHubClient {
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
         pullRequest(number: $number) {
+          viewerLatestReview { submittedAt commit { oid } }
           headRefOid mergeStateStatus viewerCanEnableAutoMerge viewerCanDisableAutoMerge viewerCanUpdateBranch
           autoMergeRequest { mergeMethod }
           suggestedReviewers { reviewer { login avatarUrl } }
@@ -136,7 +140,12 @@ extension GitHubClient {
         struct Reviewer: Decodable { var login: String?; var name: String? }
         struct Request: Decodable { var requestedReviewer: Reviewer? }
         struct Suggested: Decodable { var reviewer: Login }
+        struct LatestReview: Decodable {
+            struct Commit: Decodable { var oid: String }
+            var submittedAt: Date?; var commit: Commit?
+        }
         struct PR: Decodable {
+            var viewerLatestReview: LatestReview?
             var headRefOid: String
             var mergeStateStatus: String?
             var viewerCanEnableAutoMerge: Bool?
@@ -190,7 +199,9 @@ extension GitHubClient {
                              isResolved: $0.isResolved, isOutdated: $0.isOutdated, comments: $0.comments.nodes.map(comment),
                              diffHunk: $0.comments.nodes.first?.diffHunk)
             },
-            timeline: timeline.sorted { $0.date < $1.date })
+            timeline: timeline.sorted { $0.date < $1.date },
+            myReviewAt: raw.viewerLatestReview?.submittedAt,
+            myReviewCommit: raw.viewerLatestReview?.commit?.oid)
     }
 
     /// Submits a review, with any line comments written for it.

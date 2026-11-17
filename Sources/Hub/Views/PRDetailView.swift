@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import HubKit
 import SwiftUI
 
@@ -58,6 +59,10 @@ struct PRDetailView: View {
     @State private var collapsed: Set<String> = []
     @State private var composing: DiffAnchor?
     @State private var showReviewers = false
+    @State private var confirmClose = false
+    @State private var sinceReview: CodeSinceReview?
+    @State private var onlySinceReview = false
+    @State private var closeComment = ""
     /// Files marked as looked at; they fold away.
     @State private var viewed: Set<String> = []
     /// Files you marked viewed that changed again since (GitHub unticks them).
@@ -69,6 +74,13 @@ struct PRDetailView: View {
     @State private var fileFilter = ""
 
     private var drafts: [DraftComment] { store.drafts[pr.nodeID] ?? [] }
+
+    /// Every file, or only those touched since your review when that filter is on.
+    private var shownFiles: [PRFile] {
+        guard onlySinceReview, let changed = sinceReview?.files, !changed.isEmpty else { return files }
+        let set = Set(changed)
+        return files.filter { set.contains($0.filename) }
+    }
 
     private var context: ReviewContext {
         ReviewContext(pr: pr, actor: actor, threads: conversation?.threads ?? [], drafts: drafts,
@@ -83,9 +95,21 @@ struct PRDetailView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header
                     LinkedItemsCard(title: "Linked issues", items: store.linkedIssues(of: pr))
+                    if let conversation, let reviewedAt = conversation.myReviewAt {
+                        SinceReviewCard(pr: pr, actor: actor, prFiles: files, threads: conversation.threads, reviewedAt: reviewedAt, reviewedCommit: conversation.myReviewCommit,
+                                        headSHA: conversation.headSHA, code: sinceReview,
+                                        replies: conversation.replies(since: reviewedAt, me: store.account(actor)?.account.login ?? ""),
+                                        onlyChangedFiles: $onlySinceReview,
+                                        jump: { path in
+                                            collapsed.remove(path)
+                                            scrollTarget = "file:\(path)"
+                                        },
+                                        showClaudeCard: { scrollTarget = "claude-review" })
+                    }
                     ClaudeReviewCard(pr: pr, actor: actor, files: files, headSHA: conversation?.headSHA,
                                      summary: $comment, busy: busy, submit: { await review($0) },
                                      conversation: conversation)
+                        .id("claude-review")
                     DiscussionCard(context: context, jump: { path in scrollTarget = "file:\(path)" })
                     ClaudeCard(repo: pr.repo, accountID: actor, worktree: "pr-\(pr.number)", sessions: store.claudeSessions(for: pr)) {
                         // Fixing the code for reviewers' comments is the author's job: only on your own PRs.
@@ -119,7 +143,7 @@ struct PRDetailView: View {
                 .padding([.horizontal, .top], 22)
                 .padding(.bottom, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                ForEach(files) { file in
+                ForEach(shownFiles) { file in
                     FileDiffView(file: file, context: context, composing: $composing, collapsed: Binding(
                         get: { collapsed.contains(file.id) },
                         set: { if $0 { collapsed.insert(file.id) } else { collapsed.remove(file.id) } }),
@@ -189,6 +213,13 @@ struct PRDetailView: View {
         } message: { _ in
             Text("\(pr.title)\n\(pr.headRef) → \(pr.baseRef) in \(pr.repo)")
         }
+        .alert("Close #\(pr.number) without merging?", isPresented: $confirmClose) {
+            TextField("Comment (optional)", text: $closeComment)
+            Button("Close pull request", role: .destructive) { Task { await close() } }
+            Button("Cancel", role: .cancel) { closeComment = "" }
+        } message: {
+            Text("You can reopen it on GitHub later. The branch \(pr.headRef) is kept.")
+        }
     }
 
     // MARK: Header
@@ -197,9 +228,17 @@ struct PRDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "book.closed.fill").foregroundStyle(.tertiary)
-                Text(pr.repo).foregroundStyle(.secondary)
-                Text(verbatim: "#\(pr.number)").foregroundStyle(.tertiary).monospacedDigit()
+                WebLink(url: pr.repoURL, help: "Open \(pr.repo) on GitHub") { Text(pr.repo).foregroundStyle(.secondary) }
+                WebLink(url: pr.url, help: "Open #\(pr.number) on GitHub") {
+                    Text(verbatim: "#\(pr.number)").foregroundStyle(.tertiary).monospacedDigit()
+                }
                 Spacer()
+                HStack(spacing: 10) {
+                    WebLink(url: pr.url, help: "Conversation on GitHub") { Image(systemName: "safari") }
+                    WebLink(url: pr.filesURL, help: "Files changed on GitHub") { Image(systemName: "doc.text.magnifyingglass") }
+                    WebLink(url: pr.commitsURL, help: "Commits on GitHub") { Image(systemName: "point.3.connected.trianglepath.dotted") }
+                }
+                .foregroundStyle(.secondary)
                 if store.account(actor) != nil {
                     HStack(spacing: 5) {
                         Circle().fill(Theme.color(for: actor)).frame(width: 7, height: 7)
@@ -218,12 +257,16 @@ struct PRDetailView: View {
                 .textSelection(.enabled)
 
             HStack(spacing: 8) {
-                Avatar(url: pr.authorAvatar, size: 20)
-                Text(pr.author).fontWeight(.medium)
+                WebLink(url: pr.authorURL, help: "\(pr.author) on GitHub") {
+                    HStack(spacing: 8) {
+                        Avatar(url: pr.authorAvatar, size: 20)
+                        Text(pr.author).fontWeight(.medium)
+                    }
+                }
                 Text("wants to merge").foregroundStyle(.secondary)
-                BranchChip(name: pr.headRef)
+                WebLink(url: pr.branchURL(pr.headRef), help: "Browse \(pr.headRef) on GitHub") { BranchChip(name: pr.headRef) }
                 Image(systemName: "arrow.right").font(.caption).foregroundStyle(.tertiary)
-                BranchChip(name: pr.baseRef)
+                WebLink(url: pr.branchURL(pr.baseRef), help: "Browse \(pr.baseRef) on GitHub") { BranchChip(name: pr.baseRef) }
             }
             .font(.callout)
 
@@ -407,8 +450,17 @@ struct PRDetailView: View {
                         }
                     }
                     Button("Request reviewers…") { showReviewers = true }
+                    if pr.lane == .mine {
+                        Divider()
+                        Button("Close pull request…", role: .destructive) { confirmClose = true }
+                    }
                     Divider()
                     Button("Open in browser") { NSWorkspace.shared.open(pr.url) }
+                    Button("Copy link") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(pr.url.absoluteString, forType: .string)
+                        store.show(.info, "Copied link to #\(pr.number)")
+                    }
                     Button("Copy checkout command") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString("gh pr checkout \(pr.number) -R \(pr.repo)", forType: .string)
@@ -420,7 +472,7 @@ struct PRDetailView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Auto-merge, update branch, draft, reviewers, open in browser")
+                .help("Auto-merge, update branch, draft, reviewers, close, open in browser")
 
                 // Send the review without approving: as a comment, or blocking with "request changes".
                 Menu {
@@ -492,7 +544,19 @@ struct PRDetailView: View {
 
     private func loadConversation() async {
         guard let client = store.client(actor) else { return }
-        if let fresh = try? await client.conversation(of: pr) { conversation = fresh }
+        if let fresh = try? await client.conversation(of: pr) {
+            conversation = fresh
+            await loadSinceReview(fresh, client: client)
+        }
+    }
+
+    /// The commits and files between the commit you reviewed and the branch now.
+    private func loadSinceReview(_ conversation: PRConversation, client: GitHubClient) async {
+        guard let base = conversation.myReviewCommit, base != conversation.headSHA else {
+            sinceReview = nil
+            return
+        }
+        sinceReview = try? await client.changes(in: pr, from: base, to: conversation.headSHA)
     }
 
     private func act(_ message: String, _ work: @escaping (GitHubClient) async throws -> Void) async {
@@ -522,6 +586,15 @@ struct PRDetailView: View {
         }
     }
 
+    private func close() async {
+        busy = true
+        defer { busy = false }
+        let pr = pr, note = closeComment
+        if await store.perform("Closed #\(pr.number)", { try await $0.close(pr, comment: note) }, as: actor) {
+            closeComment = ""
+        }
+    }
+
     private func merge(_ method: MergeMethod) async {
         busy = true
         defer { busy = false }
@@ -536,6 +609,26 @@ extension PRFile {
         let name = (filename as NSString).lastPathComponent
         return ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "Package.resolved", "go.sum", "Podfile.lock", "poetry.lock", "bun.lockb", "uv.lock"].contains(name)
             || filename.contains(".min.") || filename.hasSuffix(".snap")
+    }
+}
+
+/// Plain-looking content that opens a GitHub page, with a pointing hand on hover.
+struct WebLink<Label: View>: View {
+    var url: URL
+    var help: String
+    @ViewBuilder var label: () -> Label
+    var body: some View {
+        Button { NSWorkspace.shared.open(url) } label: { label() }
+            .buttonStyle(.plain)
+            .onHover { inside in if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
+            .help(help)
+            .contextMenu {
+                Button("Open in browser") { NSWorkspace.shared.open(url) }
+                Button("Copy link") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                }
+            }
     }
 }
 
@@ -709,12 +802,23 @@ struct FileDiffView: View {
             }
             .buttonStyle(.plain)
             .help(viewed ? "Mark as not viewed" : "Mark as viewed")
+            WebLink(url: fileURL, help: "Open this file's diff on GitHub") {
+                Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(nsColor: .controlBackgroundColor), in: shape)
         .overlay(shape.strokeBorder(.separator.opacity(0.5)))
         .opacity(viewed && collapsed ? 0.7 : 1)
+    }
+
+    /// GitHub anchors each file in "Files changed" by the SHA-256 of its path.
+    private var fileURL: URL {
+        let hash = SHA256.hash(data: Data(file.filename.utf8)).map { String(format: "%02x", $0) }.joined()
+        var parts = URLComponents(url: context.pr.filesURL, resolvingAgainstBaseURL: false)!
+        parts.fragment = "diff-\(hash)"
+        return parts.url ?? context.pr.filesURL
     }
 
     private func anchor(for line: DiffLine) -> DiffAnchor? {

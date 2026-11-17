@@ -393,6 +393,10 @@ struct PRRow: View {
     private var pills: some View {
         HStack(spacing: 6) {
             MyReviewPill(pr: pr, waiting: store.reviewRequests.contains { $0.nodeID == pr.nodeID })
+            if pr.lane != .mine, pr.myReview != nil, pr.hasCommitsSinceMyReview {
+                Pill(text: "New commits", symbol: "arrow.triangle.2.circlepath", tint: Theme.violet)
+                    .help("The author pushed after your last review")
+            }
             ReviewPill(decision: pr.reviewDecision)
             if pr.mergeable == .conflicting { Pill(text: "Conflicts", symbol: "exclamationmark.triangle", tint: Theme.red) }
         }

@@ -63,8 +63,34 @@ public struct PullRequest: Identifiable, Hashable, Sendable {
     public let linkedIssues: [LinkedItem]
     /// Your own latest review on it, if you have reviewed it.
     public var myReview: MyReview? = nil
+    /// When you last reviewed, and the commit you reviewed.
+    public var myReviewAt: Date? = nil
+    public var myReviewCommit: String? = nil
+    /// The newest commit on the branch.
+    public var headCommit: String? = nil
 
     public var id: String { nodeID }
+
+    /// The author pushed after your last review.
+    public var hasCommitsSinceMyReview: Bool {
+        guard let myReviewCommit, let headCommit else { return false }
+        return myReviewCommit != headCommit
+    }
+
+    /// The repository's page, e.g. https://github.com/owner/repo (works for GitHub Enterprise too).
+    public var repoURL: URL { webRoot.appending(path: repo) }
+    /// The host's root, e.g. https://github.com.
+    public var webRoot: URL {
+        var parts = URLComponents()
+        parts.scheme = url.scheme
+        parts.host = url.host()
+        parts.port = url.port
+        return parts.url ?? URL(string: "https://github.com")!
+    }
+    public var authorURL: URL { webRoot.appending(path: author) }
+    public func branchURL(_ name: String) -> URL { repoURL.appending(path: "tree").appending(path: name) }
+    public var filesURL: URL { url.appending(path: "files") }
+    public var commitsURL: URL { url.appending(path: "commits") }
 
     public enum MyReview: String, Sendable {
         case approved = "APPROVED"

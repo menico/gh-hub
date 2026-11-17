@@ -19,10 +19,10 @@ extension GitHubClient {
     fragment pr on PullRequest {
       id number title body url isDraft createdAt updatedAt additions deletions changedFiles
       reviewDecision mergeable headRefName baseRefName
-      viewerLatestReview { state }
+      viewerLatestReview { state submittedAt commit { oid } }
       author { login avatarUrl }
       repository { nameWithOwner }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
       closingIssuesReferences(first: 6) { nodes { number title state url repository { nameWithOwner } } }
     }
     """
@@ -167,6 +167,7 @@ extension GitHubClient {
                 struct Commit: Decodable {
                     struct Rollup: Decodable { var state: String }
                     var statusCheckRollup: Rollup?
+                    var oid: String?
                 }
                 var commit: Commit
             }
@@ -192,7 +193,10 @@ extension GitHubClient {
         var repository: Repository?
         var commits: Commits?
         var closingIssuesReferences: Nodes<RawRef>?
-        struct Review: Decodable { var state: String }
+        struct Review: Decodable {
+            struct Commit: Decodable { var oid: String }
+            var state: String; var submittedAt: Date?; var commit: Commit?
+        }
         var viewerLatestReview: Review?
 
         func pullRequest(lane: PullRequest.Lane, accountID: String) -> PullRequest? {
@@ -210,7 +214,10 @@ extension GitHubClient {
                 headRef: headRefName ?? "", baseRef: baseRefName ?? "",
                 lane: lane, accountID: accountID,
                 linkedIssues: closingIssuesReferences?.nodes.compactMap { $0.item(.issue, .closes) } ?? [],
-                myReview: viewerLatestReview.flatMap { PullRequest.MyReview(rawValue: $0.state) })
+                myReview: viewerLatestReview.flatMap { PullRequest.MyReview(rawValue: $0.state) },
+                myReviewAt: viewerLatestReview?.submittedAt,
+                myReviewCommit: viewerLatestReview?.commit?.oid,
+                headCommit: commits?.nodes.last?.commit.oid)
         }
     }
 
@@ -359,6 +366,15 @@ extension GitHubClient {
 
     public func merge(_ pr: PullRequest, method: MergeMethod) async throws {
         try await send("PUT", "/repos/\(pr.repo)/pulls/\(pr.number)/merge", json: ["merge_method": method.rawValue])
+    }
+
+    /// Closes a pull request without merging it, with an optional parting comment.
+    public func close(_ pr: PullRequest, comment: String = "") async throws {
+        let text = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            try await send("POST", "/repos/\(pr.repo)/issues/\(pr.number)/comments", json: ["body": text])
+        }
+        try await send("PATCH", "/repos/\(pr.repo)/pulls/\(pr.number)", json: ["state": "closed"])
     }
 
     // MARK: Issues

@@ -430,4 +430,112 @@ final class ReviewInboxTests: XCTestCase {
         XCTAssertEqual(item.comment.side, .left)
         XCTAssertEqual(item.comment.body, "Don't drop this check.\n`$HOME` stays literal.")
     }
+
+    func testClaudeFailureReadsTheErrorEnvelope() throws {
+        let output = #"{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate: OAuth session expired and could not be refreshed","num_turns":1}"#
+        XCTAssertNil(ClaudeReview.parse(output))
+        let failure = try XCTUnwrap(ClaudeReview.failure(in: output))
+        XCTAssertEqual(failure.message, "Failed to authenticate: OAuth session expired and could not be refreshed")
+        XCTAssertTrue(failure.needsLogin)
+        XCTAssertEqual(ClaudeReview.failure(in: #"{"type":"result","subtype":"error_max_turns","is_error":true}"#)?.needsLogin, false)
+        XCTAssertNil(ClaudeReview.failure(in: #"{"type":"result","is_error":false,"result":"ok"}"#))
+        XCTAssertNil(ClaudeReview.failure(in: "not json"))
+    }
+}
+
+final class SinceReviewTests: XCTestCase {
+    func testGitHubLinks() {
+        let pr = PullRequest.sample
+        XCTAssertEqual(pr.repoURL.absoluteString, "https://github.com/o/r")
+        XCTAssertEqual(pr.authorURL.absoluteString, "https://github.com/a")
+        XCTAssertEqual(pr.branchURL("feat/x").absoluteString, "https://github.com/o/r/tree/feat/x")
+        XCTAssertEqual(pr.filesURL.absoluteString, "https://github.com/o/r/pull/7/files")
+    }
+
+    func testNewCommitsNeedsBothCommits() {
+        var pr = PullRequest.sample
+        XCTAssertFalse(pr.hasCommitsSinceMyReview)
+        pr.myReviewCommit = "aaa"; pr.headCommit = "aaa"
+        XCTAssertFalse(pr.hasCommitsSinceMyReview)
+        pr.headCommit = "bbb"
+        XCTAssertTrue(pr.hasCommitsSinceMyReview)
+    }
+
+    func testRepliesAfterMyReview() {
+        let reviewed = Date(timeIntervalSince1970: 1000)
+        func c(_ id: String, _ who: String, _ t: TimeInterval, _ body: String = "x") -> ReviewComment {
+            ReviewComment(id: id, databaseID: nil, author: who, authorAvatar: nil, body: body,
+                          createdAt: Date(timeIntervalSince1970: t), url: nil)
+        }
+        let mine = ReviewThread(id: "t1", path: "a.swift", line: 3, originalLine: 3, side: .right, isResolved: false, isOutdated: false,
+                                comments: [c("1", "Me", 900), c("2", "bob", 1100, "fixed")])
+        let other = ReviewThread(id: "t2", path: "b.swift", line: 9, originalLine: 9, side: .right, isResolved: false, isOutdated: false,
+                                 comments: [c("3", "carol", 500), c("4", "bob", 1200, "ok")])
+        var review = TimelineEntry(id: "r", kind: .review("COMMENTED"), author: "bob", authorAvatar: nil, body: "",
+                                   date: Date(timeIntervalSince1970: 1100))
+        review.lineComments = [.init(path: "a.swift", line: 3, body: "fixed")]
+        let timeline = [
+            TimelineEntry(id: "old", kind: .comment, author: "bob", authorAvatar: nil, body: "before", date: Date(timeIntervalSince1970: 800)),
+            TimelineEntry(id: "self", kind: .comment, author: "me", authorAvatar: nil, body: "mine", date: Date(timeIntervalSince1970: 1300)),
+            TimelineEntry(id: "new", kind: .comment, author: "bob", authorAvatar: nil, body: "pushed a fix", date: Date(timeIntervalSince1970: 1400)),
+            review,
+        ]
+        let conv = PRConversation(headSHA: "h", mergeState: "CLEAN", canEnableAutoMerge: false, canDisableAutoMerge: false,
+                                  canUpdateBranch: false, autoMergeMethod: nil, requestedReviewers: [], suggestedReviewers: [],
+                                  threads: [mine, other], timeline: timeline)
+        let replies = conv.replies(since: reviewed, me: "me")
+        XCTAssertEqual(replies.map(\.id), ["2", "4", "new"])
+        XCTAssertEqual(replies.first?.inYourThread, true)
+        XCTAssertEqual(replies[1].inYourThread, false)
+        XCTAssertEqual(replies.first?.path, "a.swift")
+    }
+}
+
+final class ReReviewTests: XCTestCase {
+    func testFocusListsCommitsAndYourOpenThreads() {
+        func c(_ who: String, _ body: String) -> ReviewComment {
+            ReviewComment(id: UUID().uuidString, databaseID: nil, author: who, authorAvatar: nil, body: body, createdAt: .now, url: nil)
+        }
+        let yours = ReviewThread(id: "1", path: "a.swift", line: 4, originalLine: 4, side: .right, isResolved: false, isOutdated: false,
+                                 comments: [c("Me", "Guard against nil here"), c("bob", "done")])
+        let resolved = ReviewThread(id: "2", path: "b.swift", line: 1, originalLine: 1, side: .right, isResolved: true, isOutdated: false,
+                                    comments: [c("me", "rename this")])
+        let others = ReviewThread(id: "3", path: "c.swift", line: 2, originalLine: 2, side: .right, isResolved: false, isOutdated: false,
+                                  comments: [c("carol", "typo")])
+        let code = CodeSinceReview(commits: [NewCommit(sha: "abcdef123", message: "Fix nil\n\nbody", author: "bob", date: nil, url: nil)],
+                                   files: ["a.swift"], rewritten: false)
+        let focus = ClaudeReview.reReviewFocus(code: code, threads: [yours, resolved, others], me: "me")
+        XCTAssertTrue(focus.contains("abcdef1 Fix nil (bob)"))
+        XCTAssertTrue(focus.contains("touched since: a.swift"))
+        XCTAssertTrue(focus.contains("a.swift:4"))
+        XCTAssertTrue(focus.contains("Guard against nil here"))
+        XCTAssertFalse(focus.contains("rename this"))
+        XCTAssertFalse(focus.contains("typo"))
+        XCTAssertFalse(focus.contains("force-pushed"))
+    }
+}
+
+final class PriorFindingsTests: XCTestCase {
+    func testReReviewListsEarlierFindingsAndWhatWasHandled() {
+        var earlier = ClaudeReview(summary: "s", verdict: "comment",
+                                   risks: [.init(level: "high", text: "Token leaks\ninto logs", path: "a.swift")],
+                                   comments: [.init(path: "a.swift", line: 3, side: .right, body: "Check for nil"),
+                                              .init(path: "b.swift", line: 9, side: .right, body: "nit: rename")])
+        earlier.handled = [earlier.comments[1].id]
+        let text = ClaudeReview.priorFindings(earlier, headChanged: true)
+        XCTAssertTrue(text.contains("re-review"))
+        XCTAssertTrue(text.contains("a.swift:3: Check for nil"))
+        XCTAssertTrue(text.contains("b.swift:9 [the reviewer already handled this one]: nit: rename"))
+        XCTAssertTrue(text.contains("risk (high) in a.swift: Token leaks into logs"))
+    }
+
+    func testCleanEarlierReviewAsksForNoNewPointsOnUnchangedCode() {
+        let clean = ClaudeReview(summary: "fine", verdict: "approve", risks: [], comments: [])
+        XCTAssertTrue(ClaudeReview.priorFindings(clean, headChanged: true).contains("only at what changed"))
+        XCTAssertTrue(ClaudeReview.priorFindings(clean, headChanged: false).contains("keep it that way"))
+    }
+
+    func testPromptsAskForEverythingInOnePass() {
+        XCTAssertTrue(ClaudeReview.codeReviewPrompt(for: .sample).contains("in one pass"))
+    }
 }

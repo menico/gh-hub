@@ -471,30 +471,30 @@ final class Store {
 
         if let seen = seenReviewIDs {
             for pr in reviewRequests where !seen.contains(pr.nodeID) {
-                notify(title: "Review requested · \(pr.repo)", body: "#\(pr.number) \(pr.title) — \(pr.author)")
+                notify(title: "Review requested · \(pr.repo)", body: "#\(pr.number) \(pr.title) — \(pr.author)", target: "pr:\(pr.nodeID)")
             }
         }
         let assigned = issues.filter { $0.lane == .assigned }
         if let seen = seenAssignedIDs {
             for issue in assigned where !seen.contains(issue.nodeID) {
-                notify(title: "Issue assigned · \(issue.repo)", body: "#\(issue.number) \(issue.title)")
+                notify(title: "Issue assigned · \(issue.repo)", body: "#\(issue.number) \(issue.title)", target: "issue:\(issue.nodeID)")
             }
         }
         seenAssignedIDs = Set(assigned.map(\.nodeID))
         if let seen = seenFailedRunIDs {
             for run in failed where !seen.contains(run.id) && isOurs(run) {
-                notify(title: "Run failed · \(run.repo)", body: "\(run.name) on \(run.branch ?? "?") — \(run.title)")
+                notify(title: "Run failed · \(run.repo)", body: "\(run.name) on \(run.branch ?? "?") — \(run.title)", target: "run:\(run.id)")
             }
         }
         if let seen = seenWaitingRunIDs {
             for run in waiting where !seen.contains(run.id) {
-                notify(title: "Waiting for approval · \(run.repo)", body: "\(run.name) — \(run.title)")
+                notify(title: "Waiting for approval · \(run.repo)", body: "\(run.name) — \(run.title)", target: "waiting:\(run.id)")
             }
         }
         for run in runs where watchedRuns.contains(run.id) && !run.isActive {
             watchedRuns.remove(run.id)
             notify(title: "\(run.phase == .success ? "✓ Finished" : run.phase == .failure ? "✗ Failed" : "Finished") · \(run.repo)",
-                   body: "\(run.name) #\(run.runNumber) — \(run.title)")
+                   body: "\(run.name) #\(run.runNumber) — \(run.title)", target: "run:\(run.id)")
         }
         seenReviewIDs = reviewIDs
         seenFailedRunIDs = Set(failed.map(\.id))
@@ -513,13 +513,38 @@ final class Store {
         return isOurs(run)
     }
 
-    func notify(title: String, body: String) {
+    /// `target` says what a click opens ("pr:<node id>", "issue:<node id>",
+    /// "run:<id>", "waiting:<id>"); see `destination(of:)`.
+    func notify(title: String, body: String, target: String? = nil) {
         guard Bundle.main.bundleIdentifier != nil, UserDefaults.standard.object(forKey: "notify") as? Bool ?? true else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
+        if let target { content.userInfo = [NotificationRouter.targetKey: target] }
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// Where a notification's target lives now, or nil when it is gone
+    /// (reviewed, closed, or no longer listed).
+    func destination(of target: String) -> (Pane, Selection)? {
+        let parts = target.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        let key = parts[1]
+        switch parts[0] {
+        case "pr":
+            if let pr = reviewRequests.first(where: { $0.nodeID == key }) { return (.reviews, .pr(pr)) }
+            if let pr = myPulls.first(where: { $0.nodeID == key }) { return (.mine, .pr(pr)) }
+            if let pr = reviewedPulls.first(where: { $0.nodeID == key }) { return (.reviews, .pr(pr)) }
+        case "issue":
+            if let issue = issues.first(where: { $0.nodeID == key }) { return (.issues, .issue(issue)) }
+        case "run", "waiting":
+            if let run = runs.first(where: { String($0.id) == key }) {
+                return (parts[0] == "waiting" && run.phase == .waiting ? .waiting : .actions, .run(run))
+            }
+        default: break
+        }
+        return nil
     }
 
     /// A fresher copy of one run, fetched while someone watches it.

@@ -116,7 +116,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
 
         \(hasCheckout ? "The current folder is a local clone of the repository (it may be on a different commit than this PR; the diff below is the truth). Read surrounding code when it helps you judge a change, but keep it brief." : "")
         \(focus.map { "The reviewer asks you to focus on: \($0)\n" } ?? "")
-        \(persona.lens) Only comment where you are fairly confident; fewer good comments beat many weak ones.
+        \(persona.lens) Only comment where you are fairly confident, but be complete: \(onePass)
 
         Every diff line below starts with its address: R<n> is line n of the new file, L<n> is line n of the old file. \
         Comment only on lines that appear in the diff, using that number and side (RIGHT for R, LEFT for L).
@@ -146,10 +146,49 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         even for a small pull request. Do not post anything to GitHub: no gh pr comment, no inline comments. \
         When the review is finished, write the findings for a person in short markdown (the reviewer reads this when they open \
         the conversation), then return the structured result: summary (2–4 sentences: what the PR does and whether it is safe to merge), \
-        verdict, risks, and comments. \
+        verdict, risks, and comments. \(onePass) \
         Put each validated issue in "comments" when it points at a line the PR changed (use the new file's line number; \
         side LEFT with the old line number only for a removed line), otherwise in "risks". If nothing was found, say so in the summary and leave both lists empty.)
         """ + lens
+    }
+
+    /// Asks for everything in one go: a review that holds findings back, or
+    /// finds a few more each time it runs, sends the author round and round.
+    public static let onePass = """
+    The author will fix everything you raise in one round, and the reviewer does not want another round of new findings \
+    after that. So report every real problem you see now, in one pass: go through every changed file and every hunk, \
+    and include smaller issues too (start those comments with "nit:"). Do not keep anything back for a later review.
+    """
+
+    /// What an earlier Claude review of the same pull request raised, so a
+    /// re-review checks those instead of starting over and finding a fresh
+    /// set of things to say about code nobody touched.
+    public static func priorFindings(_ previous: ClaudeReview, headChanged: Bool) -> String {
+        guard !previous.comments.isEmpty || !previous.risks.isEmpty else {
+            return """
+
+            You reviewed this pull request before and found nothing to raise. \
+            \(headChanged ? "Look only at what changed since; do not start raising points about code that was already there and unchanged." : "Unless you find a clear bug you missed, keep it that way.")
+            """
+        }
+        var text = """
+
+        This is a re-review. An earlier review of this pull request already raised the points below. \
+        For each one, check whether the current code fixes it, and say so in your findings ("fixed" / "still open"); \
+        put it in comments again only when it is still open. \
+        Raise a new point only when it is in code that changed since that review, or when it is a real bug (not style, \
+        naming or a nit) that the earlier review missed. Do not re-word or re-argue points that were dismissed.
+
+        Earlier findings:
+        """
+        for c in previous.comments.prefix(40) {
+            let state = previous.handled.contains(c.id) ? " [the reviewer already handled this one]" : ""
+            text += "\n- \(c.path):\(c.line)\(state): \(c.body.replacingOccurrences(of: "\n", with: " ").prefix(400))"
+        }
+        for r in previous.risks.prefix(20) {
+            text += "\n- risk (\(r.level))\(r.path.map { " in \($0)" } ?? ""): \(r.text.replacingOccurrences(of: "\n", with: " ").prefix(400))"
+        }
+        return text + "\n"
     }
 
     /// What `claude -p --json-schema` must return. Claude hands it over
@@ -199,6 +238,31 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         review.costUSD = cost
         review.sessionID = session
         return review
+    }
+
+    /// Why a `claude -p --output-format json` run stopped without an answer.
+    public struct Failure: Equatable, Sendable {
+        public var message: String
+        /// The account's login expired or is missing: `claude auth login` fixes it.
+        public var needsLogin: Bool
+    }
+
+    /// The error a failed run reports in its envelope (`is_error` with a
+    /// `result` message), or nil when there is none.
+    public static func failure(in output: String) -> Failure? {
+        for line in output.split(separator: "\n").reversed() where line.hasPrefix("{") {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["type"] as? String == "result"
+            else { continue }
+            guard object["is_error"] as? Bool == true else { return nil }
+            let message = (object["result"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let text = message.isEmpty ? "Claude stopped with an error (\(object["subtype"] as? String ?? "unknown"))." : message
+            let lower = text.lowercased()
+            let login = ["failed to authenticate", "oauth", "/login", "not logged in", "invalid api key"].contains { lower.contains($0) }
+            return Failure(message: text, needsLogin: login)
+        }
+        return nil
     }
 
     /// Keeps only comments that land on a line of the diff, the only places

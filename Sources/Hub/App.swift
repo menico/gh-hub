@@ -31,6 +31,19 @@ struct HubApp: App {
                         router.showQuickOpen = true
                     }
                     GlobalHotKey.shared.apply()
+                    NotificationRouter.shared.action = { [store, router] target in
+                        NSApp.activate(ignoringOtherApps: true)
+                        openWindow(id: "main")
+                        guard let (pane, selection) = store.destination(of: target) else {
+                            // Gone from the lists since: show where it was.
+                            let kind = target.split(separator: ":").first.map(String.init)
+                            router.section = ["pr": .reviews, "issue": .issues, "run": .actions, "waiting": .waiting][kind ?? ""] ?? router.section
+                            return
+                        }
+                        // The pick may belong to another account than the one in view.
+                        store.scope = nil
+                        router.open(pane, selection)
+                    }
                 }
                 .task {
                     // Comments a Claude conversation handed back with gh-hub-comment.
@@ -93,6 +106,11 @@ struct HubApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before launch finishes, so a click that launched Hub still arrives.
+        NotificationRouter.shared.install()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--probe") { probe() }
         if CommandLine.arguments.contains("--probe-review") { probeReview() }
@@ -277,6 +295,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("  \(state.account.login): reviews \(store.visibleReviews.count) reviewed \(store.visibleReviewed.count) \(store.visibleReviewed.prefix(3).map { "#\($0.number) \($0.myReview?.rawValue ?? "-")" }) mine \(store.visibleMine.count) runs \(store.visibleRuns.count) run-repos \(Set(store.visibleRuns.map(\.repo)).sorted()) reachable-repos \(all)")
             }
             store.scope = nil
+            let moved = store.reviewedPulls.filter(\.hasCommitsSinceMyReview)
+            print("reviewed with new commits:", moved.map { "#\($0.number)" })
+            if let pr = moved.first, let client = store.client(pr.accountID),
+               let conv = try? await client.conversation(of: pr), let base = conv.myReviewCommit {
+                let code = try? await client.changes(in: pr, from: base, to: conv.headSHA)
+                let login = store.account(pr.accountID)?.account.login ?? ""
+                print("  since review on #\(pr.number): commits \(code?.commits.count ?? -1) files \(code?.files.count ?? -1) rewritten \(code?.rewritten ?? false) replies \(conv.replies(since: conv.myReviewAt ?? .now, me: login).count)")
+            }
             for pr in store.reviewRequests.prefix(0) { print("  review", pr.repo, pr.number, pr.title) }
 
             if let repo = store.repos.first, let client = store.client(repo.accountID) {
