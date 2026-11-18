@@ -22,6 +22,8 @@ final class ClaudeReviewer {
     /// Claude commands with a browser sign-in under way.
     private(set) var signingIn: Set<String> = []
     @ObservationIgnored private var processes: [String: Process] = [:]
+    /// Checkouts of a pull request's head that a review is running in now.
+    @ObservationIgnored private(set) var activeCheckouts: Set<String> = []
 
     private static var folder: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -46,7 +48,9 @@ final class ClaudeReviewer {
     var runningCount: Int { states.values.filter { if case .running = $0 { true } else { false } }.count }
 
     func cancel(_ pr: PullRequest) {
-        processes[pr.nodeID]?.terminate()
+        // Before Claude starts (while the checkout is made) there is nothing to stop yet;
+        // the review sees it was dropped and doesn't start.
+        if let process = processes[pr.nodeID], process.isRunning { process.terminate() }
         processes[pr.nodeID] = nil
         states[pr.nodeID] = nil
     }
@@ -79,24 +83,29 @@ final class ClaudeReviewer {
         var earlier: ClaudeReview?
         if case .done(let review) = state(for: pr) { earlier = review }
         let followUp = followUp || earlier != nil
-        var prompt = mode == .quick
-            ? ClaudeReview.prompt(for: pr, files: files, hasCheckout: clone.exists, focus: focus?.nilIfEmpty, persona: persona, followUp: followUp)
-            : ClaudeReview.codeReviewPrompt(for: pr, persona: persona, followUp: followUp)
-        if mode == .codeReview, let focus = focus?.nilIfEmpty { prompt += "\n(The reviewer also asks you to pay attention to: \(focus))" }
-        // A re-review starts from what the last one said, not from scratch.
-        if let earlier {
-            prompt += ClaudeReview.priorFindings(earlier, headChanged: head != nil && reviewedHead[pr.nodeID] != head)
+        let headChanged = head != nil && reviewedHead[pr.nodeID] != head
+        func prompt(atHead: Bool) -> String {
+            var prompt = mode == .quick
+                ? ClaudeReview.prompt(for: pr, files: files, hasCheckout: clone.exists, atHead: atHead, focus: focus?.nilIfEmpty,
+                                      persona: persona, followUp: followUp)
+                : ClaudeReview.codeReviewPrompt(for: pr, persona: persona, followUp: followUp, atHead: atHead)
+            if mode == .codeReview, let focus = focus?.nilIfEmpty { prompt += "\n(The reviewer also asks you to pay attention to: \(focus))" }
+            // A re-review starts from what the last one said, not from scratch.
+            if let earlier { prompt += ClaudeReview.priorFindings(earlier, headChanged: headChanged) }
+            return prompt
         }
+        // With a clone, Claude reviews in a throwaway checkout of the PR's head, so
+        // reading around a change shows the PR's code, not the clone's branch.
+        let checkout = clone.exists ? ReviewCheckout.newPath(repo: pr.repo, number: pr.number) : nil
+        let prompts = (atHead: checkout.map { _ in prompt(atHead: true) }, inClone: prompt(atHead: false))
+        let (clonePath, number) = (clone.path, pr.number)
         let plugin = claude.codeReviewPlugin(for: profile)
         let id = pr.nodeID
-        let cwd = clone.exists ? clone.path : NSTemporaryDirectory()
         let profileName = profile?.name
         states[id] = .running(started: .now)
+        if let checkout { activeCheckouts.insert(checkout) }
 
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("hub-review-\(UUID().uuidString).md")
-        do { try prompt.write(to: tmp, atomically: true, encoding: .utf8) } catch {
-            states[id] = .failed(error.localizedDescription); return
-        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         // The findings come back as structured output, so the conversation stays readable.
@@ -118,7 +127,6 @@ final class ClaudeReviewer {
                 + "--disallowedTools \(denied.map(Shell.quote).joined(separator: " ")) "
                 + "-- \"$(cat \(Shell.quote(tmp.path)))\""]
         }
-        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
         var env = ShellEnv.environment()
         // gh inside the review reads GitHub as the account that sees the PR; Quick never runs gh.
         if mode == .codeReview, let ghToken {
@@ -134,7 +142,22 @@ final class ClaudeReviewer {
 
         Task.detached(priority: .userInitiated) { [weak self] in
             var result: Result<ClaudeReview, Error>
+            var cwd = clone.exists ? clonePath : NSTemporaryDirectory()
+            var checkedOut: String?
+            if let checkout {
+                do {
+                    try ReviewCheckout.add(clone: clonePath, number: number, sha: head, at: checkout)
+                    (cwd, checkedOut) = (checkout, checkout)
+                } catch {
+                    // Offline, or the clone can't reach GitHub: review from the clone as before.
+                    ReviewCheckout.remove(checkout, clone: clonePath)
+                }
+            }
             do {
+                try (checkedOut != nil ? prompts.atHead ?? prompts.inClone : prompts.inClone).write(to: tmp, atomically: true, encoding: .utf8)
+                process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+                // Cancelled while the checkout was made: don't start Claude.
+                guard await self?.isCurrent(id, process) == true else { throw CancellationError() }
                 try process.run()
                 // Read both pipes while it runs so neither fills up and stalls it.
                 async let stdout = Task.detached { out.fileHandleForReading.readDataToEndOfFile() }.value
@@ -163,11 +186,16 @@ final class ClaudeReviewer {
                 result = .failure(error)
             }
             try? FileManager.default.removeItem(at: tmp)
-            await self?.finish(id: id, process: process, head: head, result: result)
+            // The checkout goes now; opening the conversation later puts it back.
+            if let checkedOut { ReviewCheckout.remove(checkedOut, clone: clonePath) }
+            await self?.finish(id: id, process: process, head: head, checkout: checkout, result: result)
         }
     }
 
-    private func finish(id: String, process: Process, head: String?, result: Result<ClaudeReview, Error>) {
+    private func isCurrent(_ id: String, _ process: Process) -> Bool { processes[id] === process }
+
+    private func finish(id: String, process: Process, head: String?, checkout: String?, result: Result<ClaudeReview, Error>) {
+        if let checkout { activeCheckouts.remove(checkout) }
         guard processes[id] === process else { return }
         processes[id] = nil
         needsLogin.remove(id)

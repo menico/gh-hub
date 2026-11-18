@@ -404,8 +404,21 @@ final class ClaudeLink {
     }
 
     /// Picks up a headless review as a conversation, to ask Claude about it.
-    func resumeReview(_ review: ClaudeReview, title: String, pr: PullRequest) throws {
+    /// `head`: the commit it reviewed, to put a removed checkout of it back.
+    func resumeReview(_ review: ClaudeReview, title: String, pr: PullRequest, head: String? = nil) throws {
         guard let id = review.sessionID, let cwd = review.cwd else { return }
+        let q = Shell.quote, clone = q(clonePath(for: pr.repo).path)
+        // A review that ran in a checkout of the PR's head resumes there; it was removed
+        // after the review, so check the same commit out again at the same path.
+        let restore = !cwd.hasPrefix(ReviewCheckout.folder + "/") ? [] : [
+            "if [ ! -d \(q(cwd)) ]; then",
+            "  echo 'Checking out the pull request again for this conversation…'",
+            "  git -C \(clone) worktree prune",
+            "  \(head.map { "git -C \(clone) cat-file -e \(q($0))^{commit} 2>/dev/null || " } ?? "")git -C \(clone) fetch --quiet --no-tags origin pull/\(pr.number)/head",
+            "  mkdir -p \(q(ReviewCheckout.folder))",
+            "  \(head.map { "git -C \(clone) worktree add --quiet --detach \(q(cwd)) \(q($0)) 2>/dev/null || " } ?? "")git -C \(clone) worktree add --quiet --detach \(q(cwd)) FETCH_HEAD",
+            "fi",
+        ]
         let profile = review.profile.flatMap { name in cpx.profiles.first { $0.name == name } }
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("io.github.menico.gh-hub/launch", isDirectory: true)
@@ -415,6 +428,7 @@ final class ClaudeLink {
         _ = try open(["#!/bin/bash"] + back.lines + [
             "printf '\\033]0;%s\\007' \(Shell.quote("Hub · " + title))",
             "clear",
+        ] + restore + [
             "cd \(Shell.quote(cwd)) || exit 1",
             "\(claudeCommand(profile)) --resume \(Shell.quote(id))\(back.argument)",
             "exec \"${SHELL:-/bin/zsh}\" -l",

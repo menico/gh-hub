@@ -671,7 +671,7 @@ struct ClaudeReviewCard: View {
             }
             if review.sessionID != nil {
                 Button {
-                    do { try store.claude.resumeReview(review, title: "Review #\(pr.number)", pr: pr) }
+                    do { try store.claude.resumeReview(review, title: "Review #\(pr.number)", pr: pr, head: store.reviewer.reviewedHead[pr.nodeID]) }
                     catch { store.show(.failure, error.localizedDescription) }
                 } label: { Label("Open conversation", systemImage: "bubble.left.and.text.bubble.right") }
                     .controlSize(.small)

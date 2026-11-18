@@ -108,7 +108,9 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
 
     /// `followUp`: the reviewer already reviewed this pull request, so only
     /// blocking problems count (`followUpBar`) instead of everything (`onePass`).
-    public static func prompt(for pr: PullRequest, files: [PRFile], hasCheckout: Bool, focus: String?,
+    /// `atHead`: the current folder is a checkout of the pull request's head
+    /// commit, not just some clone of the repository.
+    public static func prompt(for pr: PullRequest, files: [PRFile], hasCheckout: Bool, atHead: Bool = false, focus: String?,
                               persona: ReviewPersona = .general, followUp: Bool = false) -> String {
         """
         You are reviewing pull request #\(pr.number) in \(pr.repo): "\(pr.title)" by \(pr.author) (\(pr.headRef) → \(pr.baseRef)).
@@ -116,7 +118,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         Description:
         \(pr.body.isEmpty ? "(none)" : String(pr.body.prefix(4000)))
 
-        \(hasCheckout ? "The current folder is a local clone of the repository (it may be on a different commit than this PR; the diff below is the truth). Read surrounding code when it helps you judge a change, but keep it brief." : "")
+        \(atHead ? checkoutNote : hasCheckout ? "The current folder is a local clone of the repository (it may be on a different commit than this PR; the diff below is the truth). Read surrounding code when it helps you judge a change, but keep it brief." : "")
         \(focus.map { "The reviewer asks you to focus on: \($0)\n" } ?? "")
         \(persona.lens) Only comment where you are fairly confident\(followUp ? ". " + followUpBar : ", but be complete: " + onePass)
 
@@ -136,7 +138,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
     /// also has a built-in /code-review) on the pull request, without
     /// --comment so it posts nothing, and asks for the findings as JSON so
     /// they can become draft comments.
-    public static func codeReviewPrompt(for pr: PullRequest, persona: ReviewPersona = .general, followUp: Bool = false) -> String {
+    public static func codeReviewPrompt(for pr: PullRequest, persona: ReviewPersona = .general, followUp: Bool = false, atHead: Bool = false) -> String {
         let lens = persona.id == ReviewPersona.general.id ? "" : """
 
         (The reviewer wants this review from a particular perspective; give it to every agent you launch and judge findings by it: \(persona.lens))
@@ -151,8 +153,15 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         verdict, risks, and comments. \(followUp ? followUpBar + " Hold every agent's findings to this bar and drop the rest." : onePass) \
         Put each validated issue in "comments" when it points at a line the PR changed (use the new file's line number; \
         side LEFT with the old line number only for a removed line), otherwise in "risks". If nothing was found, say so in the summary and leave both lists empty.)
-        """ + lens
+        """ + (atHead ? "\n\n" + checkoutNote + " Tell every agent you launch." : "") + lens
     }
+
+    /// Said when the review runs in a checkout of the pull request's head.
+    public static let checkoutNote = """
+    The current folder is a checkout of this pull request at its head commit: Read, Grep and Glob see the code as the PR \
+    leaves it, including files it adds. Use it to check callers, definitions and surrounding code before you call something \
+    a problem, but keep it brief. It is a temporary copy: do not edit anything.
+    """
 
     /// Asks for everything in one go: a review that holds findings back, or
     /// finds a few more each time it runs, sends the author round and round.

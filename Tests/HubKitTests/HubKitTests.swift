@@ -582,3 +582,44 @@ final class NotificationTests: XCTestCase {
         XCTAssertFalse(make("Issue", nil, reason: "subscribed").deservesBanner)
     }
 }
+
+final class ReviewCheckoutTests: XCTestCase {
+    func testPromptsSayTheFolderIsThePullRequest() {
+        let atHead = ClaudeReview.prompt(for: .sample, files: [], hasCheckout: true, atHead: true, focus: nil)
+        XCTAssertTrue(atHead.contains(ClaudeReview.checkoutNote))
+        XCTAssertFalse(atHead.contains("different commit"))
+        XCTAssertTrue(ClaudeReview.prompt(for: .sample, files: [], hasCheckout: true, focus: nil).contains("different commit"))
+        XCTAssertTrue(ClaudeReview.codeReviewPrompt(for: .sample, atHead: true).contains(ClaudeReview.checkoutNote))
+        XCTAssertFalse(ClaudeReview.codeReviewPrompt(for: .sample).contains(ClaudeReview.checkoutNote))
+    }
+
+    /// A clone on main gets a detached checkout of the PR's head (fetched from
+    /// pull/<n>/head, as on GitHub) without its own branch or files changing.
+    func testChecksOutThePullRequestHeadAndRemovesIt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hub-checkout-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let origin = root + "/origin", clone = root + "/clone"
+        func git(_ args: String...) throws { try Git.run(args) }
+        try FileManager.default.createDirectory(atPath: origin, withIntermediateDirectories: true)
+        try git("-C", origin, "init", "--quiet", "-b", "main")
+        try git("-C", origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "base")
+        try git("clone", "--quiet", origin, clone)
+        try git("-C", origin, "checkout", "--quiet", "-b", "feature")
+        try "added by the PR\n".write(toFile: origin + "/new.txt", atomically: true, encoding: .utf8)
+        try git("-C", origin, "add", "new.txt")
+        try git("-C", origin, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "pr")
+        try git("-C", origin, "update-ref", "refs/pull/7/head", "feature")
+        let sha = try Git.run(["-C", origin, "rev-parse", "feature"]).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let path = ReviewCheckout.newPath(repo: "o/repo", number: 7)
+        try ReviewCheckout.add(clone: clone, number: 7, sha: sha, at: path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path + "/new.txt"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: clone + "/new.txt"))
+        XCTAssertEqual(try Git.run(["-C", clone, "branch", "--show-current"]).trimmingCharacters(in: .whitespacesAndNewlines), "main")
+        XCTAssertEqual(ReviewCheckout.leftovers(of: clone), [path])
+
+        ReviewCheckout.remove(path, clone: clone)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        XCTAssertEqual(ReviewCheckout.leftovers(of: clone), [])
+    }
+}

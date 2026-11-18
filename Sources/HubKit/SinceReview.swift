@@ -129,7 +129,9 @@ extension ClaudeReview {
         let me = me.lowercased()
         let open = threads.filter { t in !t.isResolved && t.comments.contains { $0.author.lowercased() == me } }
         guard !open.isEmpty else { return "" }
-        var text = "\nThe reviewer's open threads. For each, say in your findings whether the new code addresses it:\n"
+        var text = "\nThe reviewer's open threads, already on GitHub. Check each against the new code. In the summary, say which are addressed "
+            + "and name any that are not (those block the merge). Do not add a comment or a risk that repeats one of these threads: "
+            + "the reviewer will answer in the thread itself.\n"
         for t in open.prefix(20) {
             let line = (t.line ?? t.originalLine).map { ":\($0)" } ?? ""
             let said = t.comments.map { "\($0.author): \($0.body.replacingOccurrences(of: "\n", with: " ").prefix(300))" }

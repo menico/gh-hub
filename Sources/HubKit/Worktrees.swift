@@ -90,10 +90,11 @@ extension Git {
 
     /// Runs git and returns its output, or throws with what it printed to stderr.
     @discardableResult
-    public static func run(_ args: [String]) throws -> String {
+    public static func run(_ args: [String], environment: [String: String]? = nil) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = args
+        if let environment { process.environment = environment }
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err

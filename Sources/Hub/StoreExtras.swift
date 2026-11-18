@@ -73,9 +73,32 @@ extension Store {
         if !removed.isEmpty {
             show(.success, "Removed \(removed.count) finished worktree\(removed.count == 1 ? "" : "s"): \(removed.map { "\($0.repo.split(separator: "/").last ?? "")/\($0.worktree.name)" }.joined(separator: ", "))")
         }
+        await removeLeftoverReviewCheckouts()
         worktrees = found.sorted { a, b in
             a.isDone != b.isDone ? a.isDone : (a.modified ?? .distantPast) > (b.modified ?? .distantPast)
         }
+    }
+
+    /// Review checkouts left behind: by a review cut short when Hub quit, or put back to
+    /// resume a review's conversation. Ones a review runs in now, or made in the last
+    /// six hours, or with Claude or a terminal in them, stay.
+    func removeLeftoverReviewCheckouts() async {
+        let keep = reviewer.activeCheckouts
+        let clones = claude.clones.values.flatMap { $0 }
+        let cutoff = Date.now.addingTimeInterval(-6 * 3600)
+        let candidates: [(path: String, clone: String)] = await Task.detached(priority: .utility) {
+            clones.flatMap { clone in
+                ReviewCheckout.leftovers(of: clone).filter { path in
+                    let made = (try? FileManager.default.attributesOfItem(atPath: path))?[.creationDate] as? Date
+                    return !keep.contains(path) && (made ?? .distantPast) < cutoff
+                }.map { ($0, clone) }
+            }
+        }.value
+        let gone = candidates.filter { !worktreeInUse($0.path) && !reviewer.activeCheckouts.contains($0.path) }
+        guard !gone.isEmpty else { return }
+        await Task.detached(priority: .utility) {
+            for item in gone { ReviewCheckout.remove(item.path, clone: item.clone) }
+        }.value
     }
 
     /// A Hub terminal or a live Claude session is working in this folder.
