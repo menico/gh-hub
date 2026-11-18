@@ -639,8 +639,9 @@ struct ClaudeReviewCard: View {
         Task {
             // gh inside the review runs as the account that sees this PR.
             let token = await account.asyncMap { try? await GHCLI.token(for: $0) } ?? nil
+            // You already sent a review on GitHub: this is a re-review, held to the blocking-only bar.
             store.reviewer.review(pr, files: files, head: head, claude: store.claude, accountID: actor, focus: focus,
-                                  mode: mode, persona: persona, ghToken: token, profileOverride: overrideKey)
+                                  mode: mode, followUp: pr.myReview != nil, persona: persona, ghToken: token, profileOverride: overrideKey)
         }
     }
 

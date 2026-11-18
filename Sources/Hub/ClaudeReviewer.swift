@@ -68,19 +68,23 @@ final class ClaudeReviewer {
     }
 
     func review(_ pr: PullRequest, files: [PRFile], head: String?, claude: ClaudeLink, accountID: String, focus: String?,
-                mode: Mode = .quick, persona: ReviewPersona = .general, ghToken: String? = nil, profileOverride: String? = nil) {
+                mode: Mode = .quick, followUp: Bool = false, persona: ReviewPersona = .general, ghToken: String? = nil, profileOverride: String? = nil) {
         guard !isRunning(pr) else { return }
         let clone = claude.clonePath(for: pr.repo)
         // "@claude" is plain claude; a name is that cpx profile, chosen for this review only.
         let profile = profileOverride.map { key in key == "@claude" ? nil : claude.cpx.profiles.first { $0.name == key } }
             ?? claude.profile(for: accountID, clone: clone.path)
         let command = claude.claudeCommand(profile)
+        // A re-review: asked for as one, or Claude has reviewed this pull request before.
+        var earlier: ClaudeReview?
+        if case .done(let review) = state(for: pr) { earlier = review }
+        let followUp = followUp || earlier != nil
         var prompt = mode == .quick
-            ? ClaudeReview.prompt(for: pr, files: files, hasCheckout: clone.exists, focus: focus?.nilIfEmpty, persona: persona)
-            : ClaudeReview.codeReviewPrompt(for: pr, persona: persona)
+            ? ClaudeReview.prompt(for: pr, files: files, hasCheckout: clone.exists, focus: focus?.nilIfEmpty, persona: persona, followUp: followUp)
+            : ClaudeReview.codeReviewPrompt(for: pr, persona: persona, followUp: followUp)
         if mode == .codeReview, let focus = focus?.nilIfEmpty { prompt += "\n(The reviewer also asks you to pay attention to: \(focus))" }
         // A re-review starts from what the last one said, not from scratch.
-        if let previous = state(for: pr), case .done(let earlier) = previous {
+        if let earlier {
             prompt += ClaudeReview.priorFindings(earlier, headChanged: head != nil && reviewedHead[pr.nodeID] != head)
         }
         let plugin = claude.codeReviewPlugin(for: profile)

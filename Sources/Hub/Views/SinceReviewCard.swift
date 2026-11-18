@@ -125,7 +125,7 @@ struct SinceReviewCard: View {
                 let me = store.account(actor)?.account.login ?? ""
                 let focus = ClaudeReview.reReviewFocus(code: code, threads: threads, me: me)
                 store.reviewer.review(pr, files: subset.isEmpty ? prFiles : subset, head: headSHA, claude: store.claude,
-                                      accountID: actor, focus: focus, mode: .quick, persona: ReviewPersona.named(defaultPersona))
+                                      accountID: actor, focus: focus, mode: .quick, followUp: true, persona: ReviewPersona.named(defaultPersona))
                 showClaudeCard()
             } label: {
                 Label(running ? "Claude is reviewing…" : "Re-review with Claude", systemImage: "sparkles")

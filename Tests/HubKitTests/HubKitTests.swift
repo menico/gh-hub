@@ -538,6 +538,16 @@ final class PriorFindingsTests: XCTestCase {
     func testPromptsAskForEverythingInOnePass() {
         XCTAssertTrue(ClaudeReview.codeReviewPrompt(for: .sample).contains("in one pass"))
     }
+
+    func testReReviewsOnlyRaiseBlockersAndMayComeBackClean() {
+        for prompt in [ClaudeReview.prompt(for: .sample, files: [], hasCheckout: false, focus: nil, followUp: true),
+                       ClaudeReview.codeReviewPrompt(for: .sample, followUp: true)] {
+            XCTAssertFalse(prompt.contains("in one pass"))
+            XCTAssertTrue(prompt.contains("would block the merge"))
+            XCTAssertTrue(prompt.contains("nothing blocking"))
+        }
+        XCTAssertFalse(ClaudeReview.prompt(for: .sample, files: [], hasCheckout: false, focus: nil).contains("would block the merge"))
+    }
 }
 
 final class NotificationTests: XCTestCase {

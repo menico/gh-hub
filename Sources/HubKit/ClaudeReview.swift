@@ -106,8 +106,10 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         return out
     }
 
+    /// `followUp`: the reviewer already reviewed this pull request, so only
+    /// blocking problems count (`followUpBar`) instead of everything (`onePass`).
     public static func prompt(for pr: PullRequest, files: [PRFile], hasCheckout: Bool, focus: String?,
-                              persona: ReviewPersona = .general) -> String {
+                              persona: ReviewPersona = .general, followUp: Bool = false) -> String {
         """
         You are reviewing pull request #\(pr.number) in \(pr.repo): "\(pr.title)" by \(pr.author) (\(pr.headRef) → \(pr.baseRef)).
 
@@ -116,7 +118,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
 
         \(hasCheckout ? "The current folder is a local clone of the repository (it may be on a different commit than this PR; the diff below is the truth). Read surrounding code when it helps you judge a change, but keep it brief." : "")
         \(focus.map { "The reviewer asks you to focus on: \($0)\n" } ?? "")
-        \(persona.lens) Only comment where you are fairly confident, but be complete: \(onePass)
+        \(persona.lens) Only comment where you are fairly confident\(followUp ? ". " + followUpBar : ", but be complete: " + onePass)
 
         Every diff line below starts with its address: R<n> is line n of the new file, L<n> is line n of the old file. \
         Comment only on lines that appear in the diff, using that number and side (RIGHT for R, LEFT for L).
@@ -134,7 +136,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
     /// also has a built-in /code-review) on the pull request, without
     /// --comment so it posts nothing, and asks for the findings as JSON so
     /// they can become draft comments.
-    public static func codeReviewPrompt(for pr: PullRequest, persona: ReviewPersona = .general) -> String {
+    public static func codeReviewPrompt(for pr: PullRequest, persona: ReviewPersona = .general, followUp: Bool = false) -> String {
         let lens = persona.id == ReviewPersona.general.id ? "" : """
 
         (The reviewer wants this review from a particular perspective; give it to every agent you launch and judge findings by it: \(persona.lens))
@@ -146,7 +148,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         even for a small pull request. Do not post anything to GitHub: no gh pr comment, no inline comments. \
         When the review is finished, write the findings for a person in short markdown (the reviewer reads this when they open \
         the conversation), then return the structured result: summary (2–4 sentences: what the PR does and whether it is safe to merge), \
-        verdict, risks, and comments. \(onePass) \
+        verdict, risks, and comments. \(followUp ? followUpBar : onePass) \
         Put each validated issue in "comments" when it points at a line the PR changed (use the new file's line number; \
         side LEFT with the old line number only for a removed line), otherwise in "risks". If nothing was found, say so in the summary and leave both lists empty.)
         """ + lens
@@ -158,6 +160,18 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
     The author will fix everything you raise in one round, and the reviewer does not want another round of new findings \
     after that. So report every real problem you see now, in one pass: go through every changed file and every hunk, \
     and include smaller issues too (start those comments with "nit:"). Do not keep anything back for a later review.
+    """
+
+    /// A re-review's bar. Without it every run finds a fresh crop of nits
+    /// and design opinions, and the author never gets a clean "done".
+    public static let followUpBar = """
+    This is a re-review: the reviewer has already been through this pull request and the author has responded. \
+    The only thing that matters now is whether it can merge. Raise a point only if it would block the merge: \
+    a bug, a crash, broken or wrong behaviour, a security or data-loss problem, a missing piece the change needs to work, \
+    or an earlier point that is still not addressed. Do not raise nits, style, naming, wording, comments/docs, small refactors, \
+    duplication or design preferences, not even as "nit:" and not in risks. \
+    Returning no comments is the expected, good outcome when the earlier points are addressed: then say plainly \
+    "All earlier points are addressed; nothing blocking." in the summary, leave comments and risks empty, and set verdict to approve.
     """
 
     /// What an earlier Claude review of the same pull request raised, so a
@@ -176,8 +190,8 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         This is a re-review. An earlier review of this pull request already raised the points below. \
         For each one, check whether the current code fixes it, and say so in your findings ("fixed" / "still open"); \
         put it in comments again only when it is still open. \
-        Raise a new point only when it is in code that changed since that review, or when it is a real bug (not style, \
-        naming or a nit) that the earlier review missed. Do not re-word or re-argue points that were dismissed.
+        A new point must meet the re-review bar above (it blocks the merge); a point the reviewer handled or dismissed \
+        is settled, so do not re-word or re-argue it.
 
         Earlier findings:
         """
