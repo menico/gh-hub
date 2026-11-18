@@ -523,9 +523,11 @@ final class PriorFindingsTests: XCTestCase {
                                               .init(path: "b.swift", line: 9, side: .right, body: "nit: rename")])
         earlier.handled = [earlier.comments[1].id]
         let text = ClaudeReview.priorFindings(earlier, headChanged: true)
-        XCTAssertTrue(text.contains("re-review"))
+        // A list not to repeat, never "put the still-open ones back": that re-posts every ignored nit.
+        XCTAssertTrue(text.contains("Do not raise any of these points again"))
+        XCTAssertFalse(text.contains("still open"))
         XCTAssertTrue(text.contains("a.swift:3: Check for nil"))
-        XCTAssertTrue(text.contains("b.swift:9 [the reviewer already handled this one]: nit: rename"))
+        XCTAssertTrue(text.contains("b.swift:9: nit: rename"))
         XCTAssertTrue(text.contains("risk (high) in a.swift: Token leaks into logs"))
     }
 

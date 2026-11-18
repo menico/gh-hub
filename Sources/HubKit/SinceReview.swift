@@ -109,7 +109,6 @@ extension ClaudeReview {
     /// The focus note for a re-review: what was pushed since your last review,
     /// and the open threads you are part of, so Claude checks they were addressed.
     public static func reReviewFocus(code: CodeSinceReview, threads: [ReviewThread], me: String) -> String {
-        let me = me.lowercased()
         var text = "This is a follow-up review. The reviewer already reviewed this pull request; judge only what changed since then"
         text += code.files.isEmpty ? ".\n" : " (the diff below is limited to the files touched since: \(code.files.joined(separator: ", "))).\n"
         if code.rewritten {
@@ -119,16 +118,23 @@ extension ClaudeReview {
             text += "\nCommits pushed since the last review:\n"
             text += code.commits.suffix(30).map { "- \($0.shortSHA) \($0.title) (\($0.author))" }.joined(separator: "\n") + "\n"
         }
-        let open = threads.filter { t in !t.isResolved && t.comments.contains { $0.author.lowercased() == me } }
-        if !open.isEmpty {
-            text += "\nThe reviewer's open threads. For each, say in your findings whether the new code addresses it:\n"
-            for t in open.prefix(20) {
-                let line = (t.line ?? t.originalLine).map { ":\($0)" } ?? ""
-                let said = t.comments.map { "\($0.author): \($0.body.replacingOccurrences(of: "\n", with: " ").prefix(300))" }
-                text += "- \(t.path)\(line)\(t.isOutdated ? " (code since changed)" : "")\n" + said.map { "    \($0)" }.joined(separator: "\n") + "\n"
-            }
-        }
+        text += openThreads(threads, me: me)
         text += "\nDon't repeat feedback the reviewer already gave unless it is still unaddressed."
+        return text
+    }
+
+    /// The reviewer's unresolved threads: what the author was actually asked
+    /// to fix, and so what a re-review checks. Empty when there are none.
+    public static func openThreads(_ threads: [ReviewThread], me: String) -> String {
+        let me = me.lowercased()
+        let open = threads.filter { t in !t.isResolved && t.comments.contains { $0.author.lowercased() == me } }
+        guard !open.isEmpty else { return "" }
+        var text = "\nThe reviewer's open threads. For each, say in your findings whether the new code addresses it:\n"
+        for t in open.prefix(20) {
+            let line = (t.line ?? t.originalLine).map { ":\($0)" } ?? ""
+            let said = t.comments.map { "\($0.author): \($0.body.replacingOccurrences(of: "\n", with: " ").prefix(300))" }
+            text += "- \(t.path)\(line)\(t.isOutdated ? " (code since changed)" : "")\n" + said.map { "    \($0)" }.joined(separator: "\n") + "\n"
+        }
         return text
     }
 }

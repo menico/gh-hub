@@ -635,13 +635,17 @@ struct ClaudeReviewCard: View {
 
     private func start() {
         let mode = mode, account = store.account(actor)?.account
-        let (pr, files, head, focus, actor, overrideKey) = (pr, files, headSHA, focus, actor, overrideKey)
+        let (pr, files, head, actor, overrideKey) = (pr, files, headSHA, actor, overrideKey)
+        // On a PR you already reviewed, Claude checks your open threads instead of starting over.
+        let followUp = pr.myReview != nil
+        let threads = followUp ? ClaudeReview.openThreads(conversation?.threads ?? [], me: account?.login ?? "") : ""
+        let focus = [focus.trimmingCharacters(in: .whitespacesAndNewlines), threads].filter { !$0.isEmpty }.joined(separator: "\n")
         Task {
             // gh inside the review runs as the account that sees this PR.
             let token = await account.asyncMap { try? await GHCLI.token(for: $0) } ?? nil
             // You already sent a review on GitHub: this is a re-review, held to the blocking-only bar.
             store.reviewer.review(pr, files: files, head: head, claude: store.claude, accountID: actor, focus: focus,
-                                  mode: mode, followUp: pr.myReview != nil, persona: persona, ghToken: token, profileOverride: overrideKey)
+                                  mode: mode, followUp: followUp, persona: persona, ghToken: token, profileOverride: overrideKey)
         }
     }
 

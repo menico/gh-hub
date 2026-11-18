@@ -118,6 +118,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--probe-thread"), i + 1 < CommandLine.arguments.count {
             probeThread(CommandLine.arguments[i + 1])
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--probe-rereview"), i + 1 < CommandLine.arguments.count {
+            probeReReview(CommandLine.arguments[i + 1])
+        }
         if CommandLine.arguments.contains("--probe-guard") {
             // Writes the review guard and prints the PATH a review gets.
             print(ReviewGuard.environment(ShellEnv.environment())["PATH"] ?? "")
@@ -129,6 +132,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// `gh-hub --probe-rereview owner/repo#n`: runs the Claude review the
+    /// "Review with Claude" button would run now, as a re-review with your
+    /// open threads and the saved earlier review, and prints the outcome.
+    /// Posts nothing. The saved review is overwritten, so back it up first.
+    private func probeReReview(_ name: String) {
+        Task { @MainActor in
+            let store = Store()
+            store.persists = false
+            await store.connect()
+            await store.refresh()
+            await store.claude.scan()
+            // owner/repo#n, fetched directly (the lists can miss it when the dashboard query fails).
+            let parts = name.split(separator: "#")
+            var found: PullRequest?
+            for state in store.accounts where found == nil && parts.count == 2 {
+                found = try? await store.client(state.id)?.pullRequest(repo: String(parts[0]), number: Int(parts[1]) ?? 0, lane: .reviewRequested)
+            }
+            guard let pr = found, let client = store.client(store.acting(for: pr)) else { print("PR not found"); exit(1) }
+            let actor = store.acting(for: pr)
+            let me = store.account(actor)?.account.login ?? ""
+            let files = (try? await client.files(of: pr)) ?? []
+            let conv = try? await client.conversation(of: pr)
+            if case .done(let earlier) = store.reviewer.state(for: pr) {
+                print("earlier review: \(earlier.comments.count) comments, \(earlier.risks.count) risks")
+            }
+            let threads = ClaudeReview.openThreads(conv?.threads ?? [], me: me)
+            print("\(pr.repo)#\(pr.number) myReview \(pr.myReview?.rawValue ?? "-") files \(files.count) open threads: \(threads.components(separatedBy: "\n- ").count - 1)")
+            store.reviewer.review(pr, files: files, head: conv?.headSHA, claude: store.claude, accountID: actor, focus: threads,
+                                  mode: .quick, followUp: pr.myReview != nil, persona: ReviewPersona.named(UserDefaults.standard.string(forKey: ReviewPersona.selectedKey) ?? ReviewPersona.general.id))
+            while store.reviewer.isRunning(pr) { try? await Task.sleep(for: .seconds(2)) }
+            switch store.reviewer.state(for: pr) {
+            case .done(let r):
+                print("VERDICT \(r.verdict)  comments \(r.comments.count)  risks \(r.risks.count)  cost \(r.costUSD ?? 0)")
+                print("SUMMARY \(r.summary)")
+                for c in r.comments { print("- \(c.path.split(separator: "/").last ?? ""):\(c.line) \(c.body.prefix(160).replacingOccurrences(of: "\n", with: " "))") }
+                for k in r.risks { print("- risk \(k.level): \(k.text.prefix(160))") }
+            case .failed(let message): print("FAILED", message)
+            default: print("no result")
+            }
+            exit(0)
+        }
+    }
 
     /// `hub-app --probe-thread owner/repo#n`: Claude checks the first thread
     /// waiting on you. Prints the result; posts nothing.

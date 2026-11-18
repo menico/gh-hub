@@ -148,7 +148,7 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
         even for a small pull request. Do not post anything to GitHub: no gh pr comment, no inline comments. \
         When the review is finished, write the findings for a person in short markdown (the reviewer reads this when they open \
         the conversation), then return the structured result: summary (2–4 sentences: what the PR does and whether it is safe to merge), \
-        verdict, risks, and comments. \(followUp ? followUpBar : onePass) \
+        verdict, risks, and comments. \(followUp ? followUpBar + " Hold every agent's findings to this bar and drop the rest." : onePass) \
         Put each validated issue in "comments" when it points at a line the PR changed (use the new file's line number; \
         side LEFT with the old line number only for a removed line), otherwise in "risks". If nothing was found, say so in the summary and leave both lists empty.)
         """ + lens
@@ -185,22 +185,24 @@ public struct ClaudeReview: Codable, Hashable, Sendable {
             \(headChanged ? "Look only at what changed since; do not start raising points about code that was already there and unchanged." : "Unless you find a clear bug you missed, keep it that way.")
             """
         }
+        // Not a to-do list: the reviewer chose which of these to send to the
+        // author (those are the open threads), and ignored or dismissed the
+        // rest. Asking for "still open" ones again re-posts every ignored nit.
         var text = """
 
-        This is a re-review. An earlier review of this pull request already raised the points below. \
-        For each one, check whether the current code fixes it, and say so in your findings ("fixed" / "still open"); \
-        put it in comments again only when it is still open. \
-        A new point must meet the re-review bar above (it blocks the merge); a point the reviewer handled or dismissed \
-        is settled, so do not re-word or re-argue it.
+        An earlier Claude review of this pull request already made the points below, and the reviewer has decided \
+        what to pass on to the author (the reviewer's own threads, if any, are what the author was asked to fix). \
+        Do not raise any of these points again, in comments or risks, reworded or not, whether or not the code changed. \
+        The one exception: a point that blocks the merge by the bar above and is still in the current code; \
+        mention that once in the summary.
 
-        Earlier findings:
+        Already raised before:
         """
         for c in previous.comments.prefix(40) {
-            let state = previous.handled.contains(c.id) ? " [the reviewer already handled this one]" : ""
-            text += "\n- \(c.path):\(c.line)\(state): \(c.body.replacingOccurrences(of: "\n", with: " ").prefix(400))"
+            text += "\n- \(c.path):\(c.line): \(c.body.replacingOccurrences(of: "\n", with: " ").prefix(300))"
         }
         for r in previous.risks.prefix(20) {
-            text += "\n- risk (\(r.level))\(r.path.map { " in \($0)" } ?? ""): \(r.text.replacingOccurrences(of: "\n", with: " ").prefix(400))"
+            text += "\n- risk (\(r.level))\(r.path.map { " in \($0)" } ?? ""): \(r.text.replacingOccurrences(of: "\n", with: " ").prefix(300))"
         }
         return text + "\n"
     }
