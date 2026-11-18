@@ -410,7 +410,11 @@ final class ClaudeLink {
         let q = Shell.quote, clone = q(clonePath(for: pr.repo).path)
         // A review that ran in a checkout of the PR's head resumes there; it was removed
         // after the review, so check the same commit out again at the same path.
-        let restore = !cwd.hasPrefix(ReviewCheckout.folder + "/") ? [] : [
+        let inCheckout = cwd.hasPrefix(ReviewCheckout.folder + "/")
+        // The checkout is the PR author's code: its .claude settings (hooks) and .mcp.json
+        // must not load, so Claude reads your own settings only, as in the review itself.
+        let lockdown = inCheckout ? " --setting-sources user --strict-mcp-config" : ""
+        let restore = !inCheckout ? [] : [
             "if [ ! -d \(q(cwd)) ]; then",
             "  echo 'Checking out the pull request again for this conversation…'",
             "  git -C \(clone) worktree prune",
@@ -430,7 +434,7 @@ final class ClaudeLink {
             "clear",
         ] + restore + [
             "cd \(Shell.quote(cwd)) || exit 1",
-            "\(claudeCommand(profile)) --resume \(Shell.quote(id))\(back.argument)",
+            "\(claudeCommand(profile))\(lockdown) --resume \(Shell.quote(id))\(back.argument)",
             "exec \"${SHELL:-/bin/zsh}\" -l",
         ], in: dir, id: launchID, title: title, repo: pr.repo)
     }
